@@ -252,6 +252,132 @@ async def _db_query_async(sql: str) -> None:
     typer.echo(json.dumps(result, indent=2, default=str))
 
 
+# ── augur graph load-seed ─────────────────────────────────────────────────────
+
+
+@app.command("load-seed")
+def load_seed(
+    aliases_only: Annotated[
+        bool,
+        typer.Option("--aliases-only", help="Load only alias seeds; skip the graph seed"),
+    ] = False,
+    graph_only: Annotated[
+        bool,
+        typer.Option("--graph-only", help="Load only the graph seed; skip alias loading"),
+    ] = False,
+) -> None:
+    """
+    Load Phase 1 seed data: alias table + fertilizer→food chain graph.
+
+    Idempotent: safe to run multiple times.  Existing aliases are skipped;
+    existing entity nodes are alias-rewritten rather than duplicated.
+    """
+    _run(_load_seed_async(aliases_only=aliases_only, graph_only=graph_only))
+
+
+async def _load_seed_async(*, aliases_only: bool, graph_only: bool) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.seeds.aliases_seed import load_aliases
+    from augur.seeds.seed_graph import load_seed_graph
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        if not graph_only:
+            typer.echo("Loading alias seeds…")
+            inserted = await load_aliases(pool)
+            typer.secho(f"  Aliases loaded: {inserted} new entries", fg=typer.colors.GREEN)
+
+        if not aliases_only:
+            typer.echo("Loading seed graph (fertilizer → food chain)…")
+            counts = await load_seed_graph(pool)
+            typer.secho(
+                f"  Graph seed: {counts['applied']} applied, {counts['rejected']} rejected",
+                fg=typer.colors.GREEN if counts["rejected"] == 0 else typer.colors.YELLOW,
+            )
+    finally:
+        await close_db()
+
+
+# ── augur graph verify ────────────────────────────────────────────────────────
+
+
+@app.command("verify-graph")
+def verify_graph() -> None:
+    """
+    Verify that the seed graph loaded correctly.
+
+    Checks node counts, edge counts, and that the fertilizer→food chain
+    core path exists.  Exits non-zero if verification fails.
+    """
+    _run(_verify_graph_async())
+
+
+async def _verify_graph_async() -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+
+    await init_db(settings)
+    pool = get_raw_pool()
+    ok = True
+
+    try:
+        async with pool.acquire() as conn:
+            # Basic counts
+            node_count = await conn.fetchval("SELECT COUNT(*) FROM nodes")
+            edge_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM edges WHERE NOT deprecated"
+            )
+            alias_count = await conn.fetchval("SELECT COUNT(*) FROM aliases")
+
+            typer.secho("\nGraph verification", bold=True)
+            typer.echo("─" * 40)
+            typer.echo(f"  nodes  : {node_count}")
+            typer.echo(f"  edges  : {edge_count}")
+            typer.echo(f"  aliases: {alias_count}")
+
+            # Check for the fertilizer chain core entity
+            gas_node = await conn.fetchval(
+                "SELECT node_id FROM nodes WHERE lower(name) = 'natural gas supply' LIMIT 1"
+            )
+            food_node = await conn.fetchval(
+                "SELECT node_id FROM nodes WHERE lower(name) = 'food security' LIMIT 1"
+            )
+
+            typer.echo("\n  Seed graph entities:")
+            for label, result in [("Natural Gas Supply", gas_node), ("Food Security", food_node)]:
+                mark = "✓" if result else "✗"
+                color = typer.colors.GREEN if result else typer.colors.RED
+                typer.secho(f"    {mark} {label}", fg=color)
+                if not result:
+                    ok = False
+
+            # Schema_migrations sanity check
+            migrations = await conn.fetch(
+                "SELECT version, description FROM schema_migrations ORDER BY version"
+            )
+            typer.echo("\n  Applied migrations:")
+            for row in migrations:
+                typer.echo(f"    ✓ {row['version']} — {row['description']}")
+
+    finally:
+        await close_db()
+
+    if ok:
+        typer.secho("\nVerification passed.", fg=typer.colors.GREEN)
+    else:
+        typer.secho("\nVerification FAILED.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

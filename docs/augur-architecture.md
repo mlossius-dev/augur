@@ -14,7 +14,7 @@ Cross-references:
 - Graph node and edge schema → `augur-graph-schema.md`
 - Pipeline stage internals → `augur-signal-pipeline.md`
 - Build sequence → `augur-roadmap.md`
-- Signal-extraction subsystem → `helix-integration.md`
+- Signal-extraction subsystem → `augur-signal-pipeline.md`
 
 ---
 
