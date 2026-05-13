@@ -1,10 +1,10 @@
 """
 APScheduler configuration for the Augur pipeline.
 
-Two recurring jobs:
-  - ingestion_job:  runs every hour, fetches new payloads from all sources
-  - extraction_job: runs every hour (offset by 10 min), extracts signals
-                    from recently ingested payloads
+Three recurring jobs:
+  - ingestion_job:  runs every hour at :00, fetches new payloads from all sources
+  - extraction_job: runs every hour at :10, extracts signals from recent payloads
+  - anchoring_job:  runs every hour at :25, anchors signals into the causal graph
 
 Jobs are registered on the FastAPI app lifespan and share the application's
 asyncpg pool.
@@ -100,6 +100,27 @@ async def _extraction_job(app_state: Any) -> None:
     log.info("scheduler.extraction_done", n_signals=total_signals)
 
 
+async def _anchoring_job(app_state: Any) -> None:
+    """Hourly anchoring: convert unanchored signals into graph mutations."""
+    from augur.anchoring.orchestrator import AnchoringOrchestrator
+
+    pool = app_state.raw_pool
+    llm_client = app_state.llm_client
+
+    orchestrator = AnchoringOrchestrator(pool, llm_client)
+    try:
+        result = await orchestrator.run_cycle(min_age_hours=1, limit=200)
+        log.info(
+            "scheduler.anchoring_done",
+            n_batches=result.n_batches,
+            n_signals=result.n_signals_processed,
+            n_applied=result.n_applied,
+            n_rejected=result.n_rejected,
+        )
+    except Exception as exc:
+        log.error("scheduler.anchoring_failed", error=str(exc))
+
+
 # ── Scheduler factory ─────────────────────────────────────────────────────────
 
 
@@ -129,6 +150,17 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:10:00"),
         id="extraction",
         name="Extraction pipeline",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+
+    # Anchoring: every hour at :25 (after extraction has had 15 min to run)
+    scheduler.add_job(
+        func=lambda: asyncio.ensure_future(_anchoring_job(app_state)),
+        trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:25:00"),
+        id="anchoring",
+        name="Anchoring pipeline",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,

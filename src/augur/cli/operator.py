@@ -705,6 +705,161 @@ def list_sources(
     typer.echo(f"\n{len(sources)} source(s) listed.")
 
 
+# ── augur anchor ──────────────────────────────────────────────────────────────
+
+
+@app.command("anchor")
+def anchor(
+    lens_id: Annotated[str | None, typer.Option("--lens", help="Only anchor signals from this lens")] = None,
+    min_age: Annotated[int, typer.Option("--min-age", help="Min signal age in hours")] = 1,
+    limit: Annotated[int, typer.Option("--limit")] = 200,
+    force: Annotated[bool, typer.Option("--force/--no-force", help="Include under-sized batches")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Parse batches but do not apply")] = False,
+) -> None:
+    """
+    Manually trigger one anchoring cycle.
+
+    Pulls unanchored signals from Tier A, forms topical batches, calls the
+    anchoring LLM, and applies the resulting graph operations via the Applier.
+    """
+    _run(_anchor_async(lens_id, min_age, limit, force, dry_run))
+
+
+async def _anchor_async(
+    lens_id: str | None,
+    min_age: int,
+    limit: int,
+    force: bool,
+    dry_run: bool,
+) -> None:
+    from augur.anchoring.orchestrator import AnchoringOrchestrator
+    from augur.anchoring.batch_former import form_batches
+    from augur.extraction.tier_a import TierAStore
+    from augur.db.connection import init_db, close_db, get_raw_pool
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        if dry_run:
+            tier_a = TierAStore(pool)
+            signals = await tier_a.get_unanchored(lens_id=lens_id, min_age_hours=min_age, limit=limit)
+            if not signals:
+                typer.echo("No unanchored signals found.")
+                return
+            batches = form_batches(signals, force=force)
+            typer.secho(f"\nDry run: {len(signals)} signal(s) → {len(batches)} batch(es)", bold=True)
+            for i, batch in enumerate(batches, 1):
+                typer.secho(f"\n  Batch {i} ({batch.batch_id})", fg=typer.colors.CYAN)
+                typer.echo(f"    Lens IDs:  {', '.join(batch.lens_ids) or '(mixed)'}")
+                typer.echo(f"    Signals:   {len(batch.signals)}")
+                for sig in batch.signals[:3]:
+                    typer.echo(f"      • {sig['claim_text'][:90]}")
+                if len(batch.signals) > 3:
+                    typer.echo(f"      … and {len(batch.signals) - 3} more")
+            return
+
+        llm = LLMClient.from_settings(settings)
+        orchestrator = AnchoringOrchestrator(pool, llm)
+
+        typer.echo(f"Starting anchoring cycle (lens={lens_id or 'all'}, min_age={min_age}h, force={force})…")
+        result = await orchestrator.run_cycle(
+            lens_id=lens_id, min_age_hours=min_age, limit=limit, force=force
+        )
+
+        typer.secho(f"\nAnchoring cycle complete", bold=True)
+        typer.echo(f"  Batches processed:  {result.n_batches}")
+        typer.echo(f"  Signals anchored:   {result.n_signals_processed}")
+        typer.echo(f"  Operations applied: {result.n_applied}")
+        typer.echo(f"  Operations rejected:{result.n_rejected}")
+
+        for br in result.batch_results:
+            color = typer.colors.GREEN if not br.llm_error and not br.parse_error else typer.colors.YELLOW
+            typer.secho(
+                f"\n  Batch {br.batch_id}: "
+                f"{br.n_signals} signals → "
+                f"+{br.n_applied} applied, "
+                f"-{br.n_rejected} rejected",
+                fg=color,
+            )
+            if br.llm_error:
+                typer.secho(f"    LLM error: {br.llm_error}", fg=typer.colors.RED)
+            if br.parse_error:
+                typer.secho(f"    Parse warning: {br.parse_error}", fg=typer.colors.YELLOW)
+    finally:
+        await close_db()
+
+
+# ── augur inspect-anchoring ───────────────────────────────────────────────────
+
+
+@app.command("inspect-anchoring")
+def inspect_anchoring(
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+    lens_id: Annotated[str | None, typer.Option("--lens")] = None,
+    pending: Annotated[bool, typer.Option("--pending/--all", help="Show only unanchored signals")] = True,
+) -> None:
+    """
+    Inspect signals pending anchoring (or all recent signals).
+
+    Shows claim text, confidence, proposed anchor operations, and anchor status.
+    """
+    _run(_inspect_anchoring_async(limit, lens_id, pending))
+
+
+async def _inspect_anchoring_async(limit: int, lens_id: str | None, pending: bool) -> None:
+    from augur.extraction.tier_a import TierAStore
+    from augur.db.connection import init_db, close_db, get_raw_pool
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        tier_a = TierAStore(pool)
+
+        if pending:
+            signals = await tier_a.get_unanchored(lens_id=lens_id, min_age_hours=0, limit=limit)
+            header = f"Unanchored signals (limit={limit})"
+        else:
+            signals = await tier_a.get_recent(lens_id=lens_id, limit=limit)
+            header = f"Recent signals (limit={limit})"
+
+        typer.secho(f"\n{header}: {len(signals)} found\n", bold=True)
+
+        for sig in signals:
+            status = "anchored" if sig.get("anchored") else "PENDING"
+            status_color = typer.colors.GREEN if sig.get("anchored") else typer.colors.YELLOW
+            typer.secho(
+                f"  [{status}] {sig['signal_id']} ({sig['lens_id']})",
+                fg=status_color,
+            )
+            typer.echo(f"    Claim:      {sig['claim_text'][:120]}")
+            typer.echo(f"    Confidence: {sig.get('confidence_band', '?')}")
+            typer.echo(f"    Timestamp:  {sig.get('content_timestamp', '?')}")
+            anchors = sig.get("proposed_anchors", [])
+            if anchors:
+                typer.echo(f"    Anchors ({len(anchors)}):")
+                for a in anchors[:5]:
+                    op = a.get("operation", "?")
+                    if op == "create_node":
+                        desc = f"create_node {a.get('node_type')} '{a.get('fields', {}).get('name', '?')}'"
+                    elif op == "create_edge":
+                        desc = f"create_edge {a.get('source_node_id')} --{a.get('edge_type')}--> {a.get('target_node_id')}"
+                    else:
+                        desc = f"{op}"
+                    typer.echo(f"      • {desc}")
+                if len(anchors) > 5:
+                    typer.echo(f"      … and {len(anchors) - 5} more")
+            typer.echo("")
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
