@@ -61,15 +61,27 @@ def create_app() -> FastAPI:
         await init_db(settings)
         await _run_migrations()
 
+        from augur.db.connection import get_raw_pool
+        app.state.raw_pool = get_raw_pool()
+
         # Store the LLM client on app.state so health endpoints can reach it
         # via request.app.state.llm_client (see api/health.py _get_llm_client).
         app.state.llm_client = LLMClient.from_settings(settings)
+
+        # Start the APScheduler (ingestion + extraction jobs)
+        if settings.enable_scheduler:
+            from augur.scheduler import create_scheduler
+            app.state.scheduler = create_scheduler(app.state)
+            app.state.scheduler.start()
+            log.info("augur.scheduler_started")
 
         log.info("augur.ready")
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
         log.info("augur.shutdown")
+        if hasattr(app.state, "scheduler"):
+            app.state.scheduler.shutdown(wait=False)
         await close_db()
 
     # ── Routers ───────────────────────────────────────────────────────────────

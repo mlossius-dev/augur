@@ -1,0 +1,316 @@
+# Augur source registry.
+#
+# Phase 2 starting set: 15 sources across 3 perspective pools (US/EU, India, China).
+# Tier 0, 1, and 2 sources only.
+#
+# Fields per source:
+#   source_id         : unique slug
+#   canonical_name    : human-readable name
+#   url_base          : homepage or API root
+#   tier              : 0 | 1 | 2 | 3 | 4 | structured_data
+#   perspective       : perspective pool ID
+#   languages         : list of ISO 639-1 codes
+#   access_method     : http | rss | api | searxng
+#   access_config     : method-specific config
+#   update_cadence    : real_time | hourly | daily | weekly | monthly
+#   domains           : list of topical domains
+#   starting_source_weight : 0.0 – 1.0 (within-tier default)
+#   enabled           : bool (false = skip ingestion)
+#   notes             : free text
+
+sources:
+
+  # ── Tier 0 — Primary data / structured ───────────────────────────────────
+
+  - source_id: fred
+    canonical_name: Federal Reserve Bank of St. Louis — FRED
+    url_base: https://api.stlouisfed.org
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: api
+    access_config:
+      api_key_env: FRED_API_KEY        # optional; anonymous access exists for many series
+      series_ids:
+        - DCOILWTICO          # WTI crude oil price
+        - DCOILBRENTEU        # Brent crude oil price
+        - GASREGCOVW          # US regular gasoline price
+        - PPIACO              # US producer price index (all commodities)
+        - PWHEAMTUSDM         # World wheat price (monthly)
+        - PCORNUSDM           # World corn price (monthly)
+        - PSOYBUSDM           # World soybean price (monthly)
+        - PNGASEUUSDM         # European natural gas price
+        - DEXUSEU             # USD/EUR exchange rate
+        - DEXCHUS             # CNY/USD exchange rate
+      batch_size: 10
+    update_cadence: daily
+    domains: [commodities, financial, currencies]
+    starting_source_weight: 0.95
+    enabled: true
+    notes: Free API, no key required for standard series. Key needed for bulk.
+
+  - source_id: usgs_earthquakes
+    canonical_name: USGS Earthquake Hazards Program
+    url_base: https://earthquake.usgs.gov
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: api
+    access_config:
+      endpoint: /fdsnws/event/1/query
+      default_params:
+        format: geojson
+        minmagnitude: 5.0
+        orderby: time
+        limit: 100
+    update_cadence: hourly
+    domains: [physical_world, geopolitical]
+    starting_source_weight: 1.0
+    enabled: true
+    notes: Public API, no auth required. M5.0+ threshold reduces noise.
+
+  - source_id: eia
+    canonical_name: US Energy Information Administration
+    url_base: https://api.eia.gov
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: api
+    access_config:
+      api_key_env: EIA_API_KEY          # free registration required
+      series:
+        - PET.WTIPUUS.W           # Weekly US crude oil production
+        - PET.WCRFPUS2.W          # US crude oil refinery inputs
+        - NG.N9010US2.W           # US natural gas production (monthly)
+    update_cadence: weekly
+    domains: [commodities, physical_world]
+    starting_source_weight: 0.95
+    enabled: false                      # enable after EIA_API_KEY is set
+    notes: Requires free API key from eia.gov/opendata.
+
+  # ── Tier 2 — Major wires ──────────────────────────────────────────────────
+
+  - source_id: reuters_rss
+    canonical_name: Reuters
+    url_base: https://feeds.reuters.com
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://feeds.reuters.com/reuters/businessNews
+          label: business
+        - url: https://feeds.reuters.com/reuters/world
+          label: world
+        - url: https://feeds.reuters.com/reuters/energy
+          label: energy
+        - url: https://feeds.reuters.com/reuters/agriculture
+          label: agriculture
+    update_cadence: hourly
+    domains: [commodities, financial, geopolitical]
+    starting_source_weight: 0.65
+    enabled: true
+    notes: Reuters public RSS. Business and world feeds contain commodity-relevant signal.
+
+  - source_id: ap_rss
+    canonical_name: Associated Press
+    url_base: https://rsshub.app
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://rsshub.app/apnews/topics/business
+          label: business
+        - url: https://rsshub.app/apnews/topics/world-news
+          label: world
+    update_cadence: hourly
+    domains: [commodities, geopolitical, financial]
+    starting_source_weight: 0.65
+    enabled: true
+    notes: AP via RSSHub. May need RSSHub instance.
+
+  - source_id: ft_rss
+    canonical_name: Financial Times
+    url_base: https://www.ft.com
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.ft.com/rss/home/uk
+          label: home
+        - url: https://www.ft.com/rss/markets/commodities
+          label: commodities
+    update_cadence: hourly
+    domains: [financial, commodities, geopolitical]
+    starting_source_weight: 0.70
+    enabled: true
+    notes: FT has public RSS for many feeds.
+
+  - source_id: xinhua_rss
+    canonical_name: Xinhua News Agency
+    url_base: http://www.xinhuanet.com
+    tier: 2
+    perspective: china
+    languages: [en, zh]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: http://www.xinhuanet.com/english/rss/worldrss.xml
+          label: world
+        - url: http://www.xinhuanet.com/english/rss/economyrss.xml
+          label: economy
+    update_cadence: hourly
+    domains: [geopolitical, financial, commodities]
+    starting_source_weight: 0.55
+    enabled: true
+    notes: PRC state newswire. Treat as perspective, not factual ground truth.
+
+  - source_id: the_hindu_rss
+    canonical_name: The Hindu
+    url_base: https://www.thehindu.com
+    tier: 2
+    perspective: india
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.thehindu.com/business/?service=rss
+          label: business
+        - url: https://www.thehindu.com/news/international/?service=rss
+          label: international
+    update_cadence: hourly
+    domains: [geopolitical, financial, commodities]
+    starting_source_weight: 0.60
+    enabled: true
+    notes: Major Indian English-language daily with good international coverage.
+
+  - source_id: economic_times_rss
+    canonical_name: The Economic Times
+    url_base: https://economictimes.indiatimes.com
+    tier: 2
+    perspective: india
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://economictimes.indiatimes.com/rssfeedstopstories.cms
+          label: top
+        - url: https://economictimes.indiatimes.com/markets/commodities/rssfeeds/2146842.cms
+          label: commodities
+    update_cadence: hourly
+    domains: [financial, commodities]
+    starting_source_weight: 0.60
+    enabled: true
+    notes: Indian financial daily. Good coverage of commodity prices and agricultural policy.
+
+  # ── SearXNG-mediated ──────────────────────────────────────────────────────
+
+  - source_id: searxng_commodities
+    canonical_name: SearXNG — Commodities search
+    url_base: ${SEARXNG_URL}
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: searxng
+    access_config:
+      queries:
+        - template: topic_recent
+          topic: "commodity prices oil wheat corn soybeans natural gas"
+          categories: ["news"]
+          window_hours: 24
+        - template: topic_recent
+          topic: "fertilizer supply nitrogen ammonia"
+          categories: ["news"]
+          window_hours: 48
+        - template: topic_recent
+          topic: "grain export shipment blockade"
+          categories: ["news"]
+          window_hours: 24
+      max_results_per_query: 10
+    update_cadence: daily
+    domains: [commodities]
+    starting_source_weight: 0.50
+    enabled: true
+    notes: SearXNG is a discovery layer. Results are deduplicated against known sources.
+
+  - source_id: searxng_geopolitical
+    canonical_name: SearXNG — Geopolitical search
+    url_base: ${SEARXNG_URL}
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: searxng
+    access_config:
+      queries:
+        - template: topic_recent
+          topic: "sanctions trade war tariff geopolitical"
+          categories: ["news"]
+          window_hours: 24
+        - template: topic_recent
+          topic: "conflict military escalation ceasefire"
+          categories: ["news"]
+          window_hours: 12
+      max_results_per_query: 10
+    update_cadence: daily
+    domains: [geopolitical]
+    starting_source_weight: 0.50
+    enabled: true
+    notes: Open search for geopolitical developments not covered by registered RSS sources.
+
+  # ── Tier 1 — Specialist press ─────────────────────────────────────────────
+
+  - source_id: hellenic_shipping_rss
+    canonical_name: Hellenic Shipping News
+    url_base: https://www.hellenicshippingnews.com
+    tier: 1
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.hellenicshippingnews.com/feed/
+          label: all
+    update_cadence: hourly
+    domains: [commodities, physical_world]
+    starting_source_weight: 0.75
+    enabled: true
+    notes: Shipping trade press. Good for supply chain and cargo disruption signals.
+
+  - source_id: nikkei_asia_rss
+    canonical_name: Nikkei Asia
+    url_base: https://asia.nikkei.com
+    tier: 1
+    perspective: southeast_asia_pacific
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://asia.nikkei.com/rss/feed/nar
+          label: all
+    update_cadence: hourly
+    domains: [financial, geopolitical, commodities]
+    starting_source_weight: 0.78
+    enabled: true
+    notes: Japanese-perspective Asian business reporting. Good for supply chain and tech.
+
+  - source_id: caixin_rss
+    canonical_name: Caixin Global
+    url_base: https://www.caixinglobal.com
+    tier: 1
+    perspective: china
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.caixinglobal.com/rss/
+          label: all
+    update_cadence: hourly
+    domains: [financial, commodities, geopolitical]
+    starting_source_weight: 0.80
+    enabled: true
+    notes: Semi-independent Chinese business reporting. More reliable than state media on domestic economic data.

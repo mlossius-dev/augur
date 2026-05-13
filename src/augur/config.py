@@ -54,11 +54,19 @@ class Settings(BaseSettings):
     # Daily spend cap for the main pipeline key; enforced at the call site.
     daily_llm_budget_usd: Decimal = Decimal("5.00")
 
+    # ── Ingestion ─────────────────────────────────────────────────────────────
+    # Local filesystem archive root for raw payloads
+    payload_archive_root: str = "/data/augur/payloads"
+    # Path to the sources.yaml registry; defaults to config/sources.yaml in repo
+    sources_config_path: str = ""
+
     # ── Application ───────────────────────────────────────────────────────────
     augur_env: str = "development"
     log_level: str = "INFO"
     # "text" for development console, "json" for production/VPS
     log_format: str = "json"
+    # Whether to start the APScheduler in this process
+    enable_scheduler: bool = True
 
     @field_validator("log_level")
     @classmethod

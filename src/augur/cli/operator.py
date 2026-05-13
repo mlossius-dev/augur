@@ -378,6 +378,333 @@ async def _verify_graph_async() -> None:
         raise typer.Exit(1)
 
 
+# ── augur ingest ──────────────────────────────────────────────────────────────
+
+
+@app.command("ingest")
+def ingest(
+    source_id: Annotated[
+        str | None,
+        typer.Option("--source", "-s", help="Run ingestion for one source only"),
+    ] = None,
+) -> None:
+    """
+    Run ingestion pipeline: fetch payloads from all (or one) enabled source(s).
+
+    Runs synchronously in the foreground — useful for testing a source or
+    manually triggering a cycle outside the scheduler.
+    """
+    _run(_ingest_async(source_id))
+
+
+async def _ingest_async(source_id: str | None) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.ingestion.pipeline import IngestionPipeline
+    from augur.ingestion.source_registry import get_enabled_sources, load_sources
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    pipeline = IngestionPipeline(
+        pool,
+        archive_root=settings.payload_archive_root,
+        searxng_url=str(settings.searxng_url) if settings.searxng_url else "",
+        sources_path=settings.sources_config_path or None,
+    )
+
+    try:
+        if source_id:
+            sources = [s for s in load_sources() if s.source_id == source_id]
+            if not sources:
+                typer.secho(f"Unknown source: {source_id!r}", fg=typer.colors.RED)
+                raise typer.Exit(1)
+            n = await pipeline.run_source(sources[0])
+            typer.secho(f"Stored {n} payloads from {source_id}.", fg=typer.colors.GREEN)
+        else:
+            summary = await pipeline.run_all()
+            for sid, n in sorted(summary.items()):
+                color = typer.colors.GREEN if n > 0 else typer.colors.YELLOW
+                typer.secho(f"  {sid}: {n} payloads", fg=color)
+            typer.secho(f"\nTotal: {sum(summary.values())} payloads stored.", bold=True)
+    finally:
+        await close_db()
+
+
+# ── augur inspect-payloads ────────────────────────────────────────────────────
+
+
+@app.command("inspect-payloads")
+def inspect_payloads(
+    source_id: Annotated[
+        str | None,
+        typer.Option("--source", "-s", help="Filter by source_id"),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    show_content: Annotated[bool, typer.Option("--content")] = False,
+) -> None:
+    """
+    List recently ingested payloads.
+
+    Useful for verifying that ingestion is working correctly.
+    """
+    _run(_inspect_payloads_async(source_id, limit, show_content))
+
+
+async def _inspect_payloads_async(
+    source_id: str | None, limit: int, show_content: bool
+) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        conditions = ["NOT rejected"]
+        params: list = [limit]
+        if source_id:
+            conditions.append(f"source_id = ${len(params) + 1}")
+            params.append(source_id)
+
+        where = "WHERE " + " AND ".join(conditions)
+        sql = (
+            f"SELECT payload_id, source_id, perspective, content_timestamp, "
+            f"content_type, length(content) AS content_len, fetched_at "
+            f"FROM payloads {where} ORDER BY fetched_at DESC LIMIT $1"
+        )
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+
+        if not rows:
+            typer.echo("No payloads found.")
+            return
+
+        typer.secho(f"\n{'ID':36}  {'SOURCE':25}  {'PERSPECTIVE':12}  {'CONTENT_TS':20}  CHARS", bold=True)
+        typer.echo("─" * 110)
+        for row in rows:
+            typer.echo(
+                f"{str(row['payload_id']):36}  "
+                f"{row['source_id']:25}  "
+                f"{row['perspective']:12}  "
+                f"{str(row['content_timestamp'])[:19]:20}  "
+                f"{row['content_len']}"
+            )
+
+        if show_content and rows:
+            typer.secho("\nFirst payload content:", bold=True)
+            async with pool.acquire() as conn:
+                full = await conn.fetchrow(
+                    "SELECT content FROM payloads WHERE payload_id = $1",
+                    rows[0]["payload_id"],
+                )
+            if full:
+                typer.echo(full["content"][:2000])
+    finally:
+        await close_db()
+
+
+# ── augur inspect-signals ─────────────────────────────────────────────────────
+
+
+@app.command("inspect-signals")
+def inspect_signals(
+    lens_id: Annotated[
+        str | None,
+        typer.Option("--lens", "-l", help="Filter by lens_id (e.g. commodities)"),
+    ] = None,
+    source_id: Annotated[
+        str | None,
+        typer.Option("--source", "-s", help="Filter by originating source_id"),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    show_anchors: Annotated[bool, typer.Option("--anchors")] = False,
+) -> None:
+    """
+    List recent signals from Tier A.
+
+    Pass --anchors to print the proposed_anchors for each signal.
+    """
+    _run(_inspect_signals_async(lens_id, source_id, limit, show_anchors))
+
+
+async def _inspect_signals_async(
+    lens_id: str | None, source_id: str | None, limit: int, show_anchors: bool
+) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.extraction.tier_a import TierAStore
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        tier_a = TierAStore(pool)
+        signals = await tier_a.get_recent(lens_id=lens_id, source_id=source_id, limit=limit)
+
+        if not signals:
+            typer.echo("No signals found.")
+            return
+
+        typer.secho(f"\n{'SIGNAL_ID':36}  {'LENS':12}  {'CONF':15}  {'ANCHORS':7}  CLAIM", bold=True)
+        typer.echo("─" * 120)
+        for sig in signals:
+            anchors = sig.get("proposed_anchors", [])
+            typer.echo(
+                f"{str(sig['signal_id']):36}  "
+                f"{sig['lens_id']:12}  "
+                f"{sig['confidence_band']:15}  "
+                f"{len(anchors):7}  "
+                f"{sig['claim_text'][:60]}"
+            )
+            if show_anchors and anchors:
+                for anchor in anchors:
+                    typer.secho(
+                        f"    [{anchor.get('operation')}] {json.dumps(anchor)[:120]}",
+                        fg=typer.colors.CYAN,
+                    )
+    finally:
+        await close_db()
+
+
+# ── augur extract ─────────────────────────────────────────────────────────────
+
+
+@app.command("extract")
+def extract(
+    payload_id: Annotated[
+        str | None,
+        typer.Option("--payload", "-p", help="Extract signals from one specific payload UUID"),
+    ] = None,
+    lens_id: Annotated[
+        str,
+        typer.Option("--lens", "-l", help="Lens to use (default: commodities)"),
+    ] = "commodities",
+    hours: Annotated[
+        int,
+        typer.Option("--hours", "-h", help="Look back N hours for unprocessed payloads"),
+    ] = 2,
+) -> None:
+    """
+    Run the extraction lens over recent (or a specific) payload.
+
+    Useful for testing the commodities lens manually against real content.
+    """
+    _run(_extract_async(payload_id, lens_id, hours))
+
+
+async def _extract_async(
+    payload_id_str: str | None, lens_id: str, hours: int
+) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.extraction.executor import LensExecutor
+    from augur.extraction.lenses import COMMODITIES_LENS
+    from augur.extraction.tier_a import TierAStore
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    lenses_map = {"commodities": COMMODITIES_LENS}
+    lens = lenses_map.get(lens_id)
+    if lens is None:
+        typer.secho(f"Unknown lens: {lens_id!r}. Available: {list(lenses_map)}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    llm = LLMClient.from_settings(settings)
+    executor = LensExecutor(llm)
+    tier_a = TierAStore(pool)
+
+    try:
+        async with pool.acquire() as conn:
+            if payload_id_str:
+                import uuid as _uuid
+                rows = await conn.fetch(
+                    "SELECT payload_id, content, content_timestamp, source_id FROM payloads WHERE payload_id = $1",
+                    _uuid.UUID(payload_id_str),
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT p.payload_id, p.content, p.content_timestamp, p.source_id
+                    FROM payloads p
+                    WHERE p.fetched_at > now() - $1::interval
+                      AND NOT p.rejected
+                      AND NOT EXISTS (SELECT 1 FROM signals s WHERE s.payload_id = p.payload_id)
+                    ORDER BY p.content_timestamp DESC LIMIT 10
+                    """,
+                    f"{hours} hours",
+                )
+
+        if not rows:
+            typer.echo("No payloads to process.")
+            return
+
+        typer.echo(f"Extracting signals from {len(rows)} payload(s) using lens={lens_id}…")
+        total = 0
+        for row in rows:
+            signals = await executor.extract(
+                payload_id=row["payload_id"],
+                content=row["content"],
+                content_timestamp=row["content_timestamp"],
+                source_id=row["source_id"],
+                lens=lens,
+            )
+            if signals:
+                signals = await tier_a.deduplicate_batch(signals)
+                stored = await tier_a.store_signals(signals)
+                total += stored
+                typer.secho(f"  {row['payload_id']}: {stored} signals stored", fg=typer.colors.GREEN)
+            else:
+                typer.echo(f"  {row['payload_id']}: no signals extracted")
+
+        typer.secho(f"\nTotal: {total} signals stored.", bold=True)
+    finally:
+        await close_db()
+
+
+# ── augur list-sources ─────────────────────────────────────────────────────────
+
+
+@app.command("list-sources")
+def list_sources(
+    enabled_only: Annotated[bool, typer.Option("--enabled/--all")] = True,
+) -> None:
+    """List configured sources from the source registry."""
+    from augur.ingestion.source_registry import get_enabled_sources, load_sources
+
+    sources = get_enabled_sources() if enabled_only else load_sources()
+
+    if not sources:
+        typer.echo("No sources found.")
+        return
+
+    typer.secho(f"\n{'SOURCE_ID':30}  {'TIER':12}  {'PERSP':12}  {'METHOD':10}  {'WEIGHT':6}  {'CADENCE'}", bold=True)
+    typer.echo("─" * 100)
+    for s in sources:
+        tier_label = f"tier-{s.tier}" if s.tier != "structured_data" else "struct"
+        typer.echo(
+            f"{s.source_id:30}  "
+            f"{tier_label:12}  "
+            f"{s.perspective:12}  "
+            f"{s.access_method:10}  "
+            f"{s.starting_source_weight:.2f}    "
+            f"{s.update_cadence}"
+        )
+    typer.echo(f"\n{len(sources)} source(s) listed.")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
