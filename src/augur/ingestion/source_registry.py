@@ -53,3 +53,31 @@ def load_sources(path: Path | str | None = None) -> list[SourceConfig]:
 def get_enabled_sources(path: Path | str | None = None) -> list[SourceConfig]:
     """Return only enabled sources."""
     return [s for s in load_sources(path) if s.enabled]
+
+
+async def load_sources_with_overrides(
+    pool: Any,
+    path: Path | str | None = None,
+) -> list[SourceConfig]:
+    """
+    Load sources from YAML and apply any DB weight overrides from calibration.
+
+    Returns the same list as load_sources(), but with starting_source_weight
+    replaced by the operator-approved calibration weight where available.
+    """
+    import dataclasses
+
+    from augur.calibration.weight_store import load_all_overrides
+
+    sources = load_sources(path)
+    overrides = await load_all_overrides(pool)
+
+    if not overrides:
+        return sources
+
+    result = []
+    for s in sources:
+        if s.source_id in overrides:
+            s = dataclasses.replace(s, starting_source_weight=overrides[s.source_id])
+        result.append(s)
+    return result

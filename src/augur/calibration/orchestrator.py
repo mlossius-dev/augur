@@ -238,9 +238,13 @@ class CalibrationOrchestrator:
             log.info("calibration.apply_weights_nothing_to_update")
             return {}
 
-        # Write updates to the DB (a calibration_weight_overrides table or
-        # direct to source_weights). For Phase 6 we store in a simple
-        # calibration_weight_overrides JSON file and log the operator action.
+        from augur.calibration.weight_store import persist_weight_overrides
+        await persist_weight_overrides(
+            self._pool,
+            run_id=run.run_id,
+            updates=updates,
+        )
+
         log.info(
             "calibration.weights_applied",
             run_id=str(run.run_id),

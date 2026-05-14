@@ -33,6 +33,7 @@ async def _ingestion_job(app_state: Any) -> None:
     """Hourly ingestion: fetch payloads from all enabled sources."""
     from augur.ingestion.pipeline import IngestionPipeline
     from augur.config import get_settings
+    from augur.monitoring.health import log_job_start, log_job_complete
 
     settings = get_settings()
     pool = app_state.raw_pool
@@ -43,10 +44,14 @@ async def _ingestion_job(app_state: Any) -> None:
         searxng_url=str(settings.searxng_url) if settings.searxng_url else "",
     )
 
+    log_id = await log_job_start(pool, "ingestion")
     try:
         summary = await pipeline.run_all()
+        n = sum(v for v in summary.values() if isinstance(v, int))
+        await log_job_complete(pool, log_id, n_processed=n, metadata=summary)
         log.info("scheduler.ingestion_done", summary=summary)
     except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
         log.error("scheduler.ingestion_failed", error=str(exc))
 
 
@@ -145,22 +150,36 @@ async def _extraction_job(app_state: Any) -> None:
             stored = await tier_a.store_signals(signals)
             total_signals += stored
 
+            # Register signals into the live calibration run for ongoing tracking
+            try:
+                from augur.calibration.live_tracker import register_live_signals
+                await register_live_signals(pool, signals)
+            except Exception as exc:
+                log.warning("scheduler.live_calibration_register_failed", error=str(exc))
+
     log.info("scheduler.extraction_done", n_signals=total_signals)
 
 
 async def _disconfirmation_job(app_state: Any) -> None:
     """Weekly disconfirmation pass: challenge high-weight edges."""
     from augur.disconfirmation.orchestrator import DisconfirmationOrchestrator
+    from augur.monitoring.health import log_job_start, log_job_complete
 
     pool = app_state.raw_pool
     llm_client = app_state.llm_client
 
     orchestrator = DisconfirmationOrchestrator(pool, llm_client)
+    log_id = await log_job_start(pool, "disconfirmation")
     try:
         result = await orchestrator.run_pass(
             limit=20,
             rechallenge_days=7,
             signal_window_days=7,
+        )
+        await log_job_complete(
+            pool, log_id,
+            n_processed=result.n_edges_challenged,
+            metadata={"n_found": result.n_found, "n_not_found": result.n_not_found},
         )
         log.info(
             "scheduler.disconfirmation_done",
@@ -170,19 +189,27 @@ async def _disconfirmation_job(app_state: Any) -> None:
             n_applied=result.n_operations_applied,
         )
     except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
         log.error("scheduler.disconfirmation_failed", error=str(exc))
 
 
 async def _anchoring_job(app_state: Any) -> None:
     """Hourly anchoring: convert unanchored signals into graph mutations."""
     from augur.anchoring.orchestrator import AnchoringOrchestrator
+    from augur.monitoring.health import log_job_start, log_job_complete
 
     pool = app_state.raw_pool
     llm_client = app_state.llm_client
 
     orchestrator = AnchoringOrchestrator(pool, llm_client)
+    log_id = await log_job_start(pool, "anchoring")
     try:
         result = await orchestrator.run_cycle(min_age_hours=1, limit=200)
+        await log_job_complete(
+            pool, log_id,
+            n_processed=result.n_signals_processed,
+            metadata={"n_batches": result.n_batches, "n_applied": result.n_applied, "n_rejected": result.n_rejected},
+        )
         log.info(
             "scheduler.anchoring_done",
             n_batches=result.n_batches,
@@ -191,7 +218,25 @@ async def _anchoring_job(app_state: Any) -> None:
             n_rejected=result.n_rejected,
         )
     except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
         log.error("scheduler.anchoring_failed", error=str(exc))
+
+
+async def _live_calibration_checkpoint_job(app_state: Any) -> None:
+    """Weekly live calibration checkpoint: resolve pending signal outcomes."""
+    from augur.calibration.live_tracker import checkpoint_live_outcomes
+    from augur.monitoring.health import log_job_start, log_job_complete
+
+    pool = app_state.raw_pool
+    log_id = await log_job_start(pool, "live_calibration_checkpoint")
+    try:
+        summary = await checkpoint_live_outcomes(pool)
+        n_resolved = sum(summary.values())
+        await log_job_complete(pool, log_id, n_processed=n_resolved, metadata=summary)
+        log.info("scheduler.live_calibration_checkpoint_done", summary=summary)
+    except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
+        log.error("scheduler.live_calibration_checkpoint_failed", error=str(exc))
 
 
 # ── Scheduler factory ─────────────────────────────────────────────────────────
@@ -239,13 +284,25 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         misfire_grace_time=300,
     )
 
-    # Disconfirmation: weekly, Sunday 02:00 UTC
     from apscheduler.triggers.cron import CronTrigger
+
+    # Disconfirmation: weekly, Sunday 02:00 UTC
     scheduler.add_job(
         func=lambda: asyncio.ensure_future(_disconfirmation_job(app_state)),
         trigger=CronTrigger(day_of_week="sun", hour=2, minute=0, timezone="UTC"),
         id="disconfirmation",
         name="Disconfirmation pass",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # Live calibration checkpoint: weekly, Sunday 04:00 UTC (after disconfirmation)
+    scheduler.add_job(
+        func=lambda: asyncio.ensure_future(_live_calibration_checkpoint_job(app_state)),
+        trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
+        id="live_calibration_checkpoint",
+        name="Live calibration checkpoint",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,

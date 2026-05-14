@@ -727,14 +727,18 @@ class TestApplyWeights:
     async def test_returns_all_weights_when_no_filter(self):
         orch = self._orchestrator()
         run = _make_run()
-        result = await orch.apply_weights(run)
+        with patch("augur.calibration.weight_store.persist_weight_overrides",
+                   new=AsyncMock(return_value=2)):
+            result = await orch.apply_weights(run)
         assert result == {"src_a": 0.75, "src_b": 0.55}
 
     @pytest.mark.asyncio
     async def test_filters_to_requested_sources(self):
         orch = self._orchestrator()
         run = _make_run()
-        result = await orch.apply_weights(run, source_ids=["src_a"])
+        with patch("augur.calibration.weight_store.persist_weight_overrides",
+                   new=AsyncMock(return_value=1)):
+            result = await orch.apply_weights(run, source_ids=["src_a"])
         assert result == {"src_a": 0.75}
         assert "src_b" not in result
 

@@ -1394,6 +1394,251 @@ async def _calibrate_list_async(limit: int) -> None:
         await close_db()
 
 
+# ── augur monitor ─────────────────────────────────────────────────────────────
+
+monitor_app = typer.Typer(
+    name="monitor",
+    help="Operator monitoring — pipeline health, cost, signal flow, anchoring quality.",
+    add_completion=False,
+)
+app.add_typer(monitor_app, name="monitor")
+
+
+@monitor_app.command("status")
+def monitor_status() -> None:
+    """
+    Full pipeline health snapshot.
+
+    Shows signal counts, graph size, anchoring backlog, recent job activity,
+    and stale edges awaiting disconfirmation.
+    """
+    _run(_monitor_status_async())
+
+
+async def _monitor_status_async() -> None:
+    from augur.monitoring.health import get_pipeline_health
+
+    pool, close_db = await _get_pool()
+    try:
+        health = await get_pipeline_health(pool)
+
+        typer.secho("\nPipeline status", bold=True)
+        typer.echo("─" * 50)
+
+        sig = health["signals"]
+        typer.echo(f"\n[Signals]")
+        typer.echo(f"  Total:       {sig['total']:>8,}")
+        typer.echo(f"  Last 24h:    {sig['last_24h']:>8,}")
+        typer.echo(f"  Last hour:   {sig['last_hour']:>8,}")
+        typer.echo(f"  Unclustered: {sig['unclustered']:>8,}")
+
+        g = health["graph"]
+        typer.echo(f"\n[Graph]")
+        typer.echo(f"  Live nodes:   {g['live_nodes']:>7,}")
+        typer.echo(f"  Live edges:   {g['live_edges']:>7,}")
+        typer.echo(f"  Strong edges: {g['strong_edges']:>7,}")
+        typer.echo(f"  Disputed:     {g['disputed_edges']:>7,}")
+
+        p = health["pipeline"]
+        typer.echo(f"\n[Pipeline backlog]")
+        backlog = p["anchoring_backlog"]
+        color = typer.colors.RED if backlog > 500 else typer.colors.YELLOW if backlog > 100 else typer.colors.GREEN
+        typer.secho(f"  Anchoring backlog:          {backlog:>6,}", fg=color)
+        stale = p["stale_edges_for_disconfirmation"]
+        color2 = typer.colors.YELLOW if stale > 50 else typer.colors.GREEN
+        typer.secho(f"  Stale edges (disconfirm):   {stale:>6,}", fg=color2)
+
+        py = health["payloads_24h"]
+        typer.echo(f"\n[Payloads 24h]")
+        typer.echo(f"  Fetched:  {py['total']:>6,}")
+        typer.echo(f"  Rejected: {py['rejected']:>6,}")
+
+        jobs = health["recent_jobs"]
+        if jobs:
+            typer.echo(f"\n[Recent jobs]")
+            for job_name, info in jobs.items():
+                st_color = typer.colors.GREEN if info["last_status"] == "ok" else typer.colors.RED
+                typer.secho(
+                    f"  {job_name:<35} {info['last_status']:<8} "
+                    f"n={info['last_n_processed']:>6}  {info['last_run'] or '?'}",
+                    fg=st_color,
+                )
+        typer.echo()
+    finally:
+        await close_db()
+
+
+@monitor_app.command("anchoring")
+def monitor_anchoring(
+    limit: Annotated[int, typer.Option("--limit", help="Max batches to show")] = 20,
+) -> None:
+    """
+    Show recent anchoring batch quality.
+
+    Displays applied/rejected counts per batch; helps spot prompt regressions
+    or model quality changes.
+    """
+    _run(_monitor_anchoring_async(limit))
+
+
+async def _monitor_anchoring_async(limit: int) -> None:
+    from augur.monitoring.health import get_anchoring_quality
+
+    pool, close_db = await _get_pool()
+    try:
+        batches = await get_anchoring_quality(pool, limit=limit)
+
+        if not batches:
+            typer.echo("No anchoring batches in the last 7 days.")
+            return
+
+        typer.secho(f"\nRecent anchoring batches (last 7 days, up to {limit})", bold=True)
+        typer.echo("─" * 70)
+        typer.echo(f"  {'batch_id':36}  {'applied':>7}  {'rejected':>8}  {'rej%':>6}  started")
+        typer.echo("  " + "─" * 65)
+
+        for b in batches:
+            rej_pct = b["rejection_rate"] * 100
+            color = typer.colors.RED if rej_pct > 30 else typer.colors.YELLOW if rej_pct > 10 else None
+            typer.secho(
+                f"  {b['batch_id']:36}  {b['n_applied']:>7}  {b['n_rejected']:>8}  "
+                f"{rej_pct:>5.1f}%  {b['batch_start'] or '?'}",
+                fg=color,
+            )
+        typer.echo()
+    finally:
+        await close_db()
+
+
+@monitor_app.command("signals")
+def monitor_signals(
+    hours: Annotated[int, typer.Option("--hours", help="Lookback window in hours")] = 24,
+) -> None:
+    """
+    Signal flow statistics for the given lookback window.
+
+    Shows total signal counts broken down by lens.
+    """
+    _run(_monitor_signals_async(hours))
+
+
+async def _monitor_signals_async(hours: int) -> None:
+    from augur.monitoring.health import get_signal_flow
+
+    pool, close_db = await _get_pool()
+    try:
+        flow = await get_signal_flow(pool, hours=hours)
+
+        typer.secho(f"\nSignal flow — last {hours}h", bold=True)
+        typer.echo("─" * 40)
+        typer.echo(f"  Total signals:    {flow['total_signals']:>7,}")
+        typer.echo(f"  Unique clusters:  {flow['unique_clusters']:>7,}")
+
+        if flow["by_lens"]:
+            typer.echo(f"\n  By lens:")
+            for lens_id, cnt in sorted(flow["by_lens"].items(), key=lambda x: -x[1]):
+                typer.echo(f"    {lens_id:<30} {cnt:>6,}")
+        typer.echo()
+    finally:
+        await close_db()
+
+
+@monitor_app.command("live-calibration")
+def monitor_live_calibration() -> None:
+    """
+    Show live calibration run statistics.
+
+    The live run is the continuously-open calibration run that tracks signal
+    outcomes in production. Used to identify sources whose weight should be
+    reviewed between formal calibration runs.
+    """
+    _run(_monitor_live_calibration_async())
+
+
+async def _monitor_live_calibration_async() -> None:
+    from augur.calibration.live_tracker import live_run_stats
+
+    pool, close_db = await _get_pool()
+    try:
+        stats = await live_run_stats(pool)
+
+        typer.secho("\nLive calibration run", bold=True)
+        typer.echo("─" * 40)
+        typer.echo(f"  Run ID:       {stats['run_id']}")
+        typer.echo(f"  Total:        {stats['n_total']:>7,}")
+        typer.echo(f"  Scored:       {stats['n_scored']:>7,}")
+        typer.echo(f"  Pending:      {stats['n_pending']:>7,}")
+        typer.echo(f"  Oldest signal: {stats['oldest_signal'] or 'N/A'}")
+        typer.echo(f"  Newest signal: {stats['newest_signal'] or 'N/A'}")
+
+        if stats["outcome_breakdown"]:
+            typer.echo(f"\n  Outcome breakdown:")
+            for outcome, cnt in stats["outcome_breakdown"].items():
+                typer.echo(f"    {outcome:<35} {cnt:>6,}")
+        typer.echo()
+    finally:
+        await close_db()
+
+
+@monitor_app.command("weights")
+def monitor_weights(
+    source_id: Annotated[str | None, typer.Option("--source", help="Show history for one source")] = None,
+) -> None:
+    """
+    Show current source weight overrides from calibration.
+
+    Without --source shows all current overrides. With --source shows the
+    full override history for that source.
+    """
+    _run(_monitor_weights_async(source_id))
+
+
+async def _monitor_weights_async(source_id: str | None) -> None:
+    from augur.calibration.weight_store import load_all_overrides, override_history
+    from augur.ingestion.source_registry import load_sources
+
+    pool, close_db = await _get_pool()
+    try:
+        if source_id:
+            history = await override_history(pool, source_id)
+            typer.secho(f"\nWeight override history: {source_id}", bold=True)
+            typer.echo("─" * 60)
+            if not history:
+                typer.echo("  No overrides found.")
+            for h in history:
+                active = " (active)" if h["superseded_at"] is None else ""
+                typer.echo(
+                    f"  {str(h['applied_at'])[:19]}  "
+                    f"weight={h['weight']:.4f}  "
+                    f"run={h['calibration_run_id']}{active}"
+                )
+        else:
+            overrides = await load_all_overrides(pool)
+            yaml_sources = {s.source_id: s.starting_source_weight for s in load_sources()}
+
+            typer.secho("\nActive source weight overrides", bold=True)
+            typer.echo("─" * 60)
+
+            if not overrides:
+                typer.echo("  No overrides applied. All sources using YAML baselines.")
+                return
+
+            typer.echo(f"  {'source_id':<35} {'yaml':>6}  {'override':>8}  {'delta':>6}")
+            typer.echo("  " + "─" * 56)
+
+            for sid, w in sorted(overrides.items()):
+                yaml_w = yaml_sources.get(sid, 0.5)
+                delta = w - yaml_w
+                color = typer.colors.GREEN if delta > 0 else typer.colors.YELLOW if delta < 0 else None
+                typer.secho(
+                    f"  {sid:<35} {yaml_w:>6.3f}  {w:>8.4f}  {delta:>+6.3f}",
+                    fg=color,
+                )
+        typer.echo()
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
