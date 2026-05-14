@@ -43,6 +43,7 @@ function renderHome(data) {
   renderDimensions(data.dimensions);
   renderChanges(data.changes);
   updateAsOfLabel(data.as_of);
+  if (typeof loadScenarios === 'function') loadScenarios();
 }
 
 function renderDimensions(dimensions) {

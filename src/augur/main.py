@@ -22,6 +22,7 @@ from augur.api.geo import router as geo_router
 from augur.api.health import router as health_router
 from augur.api.home import router as home_router
 from augur.api.reasoning import router as reasoning_router
+from augur.api.scenarios import router as scenarios_router
 from augur.api.topics import router as topics_router
 from augur.config import get_settings
 from augur.db.connection import close_db, init_db
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(reasoning_router)
     app.include_router(topics_router)
     app.include_router(geo_router)
+    app.include_router(scenarios_router)
 
     # ── Static files (the presentation layer) ─────────────────────────────────
 

@@ -578,3 +578,71 @@ a:hover { text-decoration: underline; }
   margin-top: 6px;
   line-height: 1.4;
 }
+
+/* ── Scenario view ───────────────────────────────────────────────────────────── */
+
+.scenario-group {
+  margin-bottom: 20px;
+}
+
+.scenario-dim-header {
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.scenario-card {
+  border: 1px solid var(--border);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  background: var(--surface);
+}
+
+.scenario-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.scenario-prob {
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.prob-high        { background: color-mix(in srgb, var(--crisis) 20%, transparent);    color: var(--crisis); }
+.prob-moderate    { background: color-mix(in srgb, var(--strained) 20%, transparent);  color: var(--strained); }
+.prob-low         { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
+.prob-negligible  { background: color-mix(in srgb, var(--text-faint) 10%, transparent); color: var(--text-faint); }
+
+.scenario-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.scenario-horizon {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.scenario-summary {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 0;
+}

@@ -1785,6 +1785,123 @@ async def _topics_nodes_async(topic_id: str) -> None:
         await close_db()
 
 
+# ── augur project ─────────────────────────────────────────────────────────────
+
+
+@app.command("project")
+def project(
+    dimension: Annotated[
+        str | None,
+        typer.Option("--dimension", "-d", help="One dimension or omit for all five"),
+    ] = None,
+    all_dimensions: Annotated[
+        bool,
+        typer.Option("--all", help="Generate for all five dimensions sequentially"),
+    ] = False,
+    no_save: Annotated[
+        bool,
+        typer.Option("--no-save", help="Generate but do not persist to DB"),
+    ] = False,
+    list_: Annotated[
+        bool,
+        typer.Option("--list", help="List current scenarios instead of generating"),
+    ] = False,
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+) -> None:
+    """
+    Generate near-term scenarios from the current graph state (LLM call).
+
+    Without flags: generate scenarios for one dimension (--dimension) or
+    all dimensions (--all).  Use --list to view existing scenarios.
+    """
+    _run(_project_async(dimension, all_dimensions, no_save, list_, limit))
+
+
+async def _project_async(
+    dimension: str | None,
+    all_dimensions: bool,
+    no_save: bool,
+    list_: bool,
+    limit: int,
+) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+    from augur.projection.orchestrator import ProjectionOrchestrator
+    from augur.projection.store import get_scenarios
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        if list_:
+            scenarios = await get_scenarios(pool, dimension=dimension, limit=limit)
+            if not scenarios:
+                typer.echo("No scenarios found.")
+                return
+
+            typer.secho(f"\n{'SCENARIO_ID':38}  {'DIM':22}  {'BAND':10}  {'HORIZON':14}  TITLE", bold=True)
+            typer.echo("─" * 130)
+            for s in scenarios:
+                band_color = {
+                    "high": typer.colors.RED,
+                    "moderate": typer.colors.YELLOW,
+                    "low": None,
+                    "negligible": typer.colors.WHITE,
+                }.get(s.probability_band)
+                typer.secho(
+                    f"  {s.scenario_id:36}  "
+                    f"{(s.dimension or 'global')[:20]:22}  "
+                    f"{s.probability_band:10}  "
+                    f"{s.time_horizon[:12]:14}  "
+                    f"{s.title[:60]}",
+                    fg=band_color,
+                )
+            typer.echo(f"\n{len(scenarios)} scenario(s).")
+            return
+
+        llm = LLMClient.from_settings(settings)
+        orch = ProjectionOrchestrator(pool, llm)
+
+        if all_dimensions or (dimension is None and not all_dimensions):
+            typer.echo("Generating scenarios for all five dimensions…")
+            results = await orch.run_all_dimensions()
+            total = 0
+            for r in results:
+                dim_label = r.dimension or "global"
+                color = typer.colors.GREEN if r.scenarios else typer.colors.YELLOW
+                typer.secho(
+                    f"  {dim_label:<25} {len(r.scenarios)} scenario(s) "
+                    f"(conditions={r.n_conditions_used}, edges={r.n_edges_used})",
+                    fg=color,
+                )
+                total += len(r.scenarios)
+                for s in r.scenarios:
+                    band_color = {"high": typer.colors.RED, "moderate": typer.colors.YELLOW}.get(s.probability_band)
+                    typer.secho(f"    [{s.probability_band:10}] {s.title}", fg=band_color)
+            typer.secho(f"\nTotal: {total} scenario(s) generated.", bold=True)
+        else:
+            typer.echo(f"Generating scenarios for dimension={dimension!r}…")
+            result = await orch.run_projection(
+                dimension=dimension,
+                save=not no_save,
+            )
+            typer.secho(
+                f"\n{len(result.scenarios)} scenario(s) generated "
+                f"(conditions={result.n_conditions_used}, edges={result.n_edges_used})",
+                bold=True,
+            )
+            for s in result.scenarios:
+                band_color = {"high": typer.colors.RED, "moderate": typer.colors.YELLOW}.get(s.probability_band)
+                typer.secho(f"\n  [{s.probability_band}] {s.title}", fg=band_color, bold=True)
+                typer.echo(f"  Horizon: {s.time_horizon}")
+                typer.echo(f"  {s.summary[:300]}")
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

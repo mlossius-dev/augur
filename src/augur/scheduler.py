@@ -222,6 +222,26 @@ async def _anchoring_job(app_state: Any) -> None:
         log.error("scheduler.anchoring_failed", error=str(exc))
 
 
+async def _projection_job(app_state: Any) -> None:
+    """Weekly scenario projection: generate scenarios for all five dimensions."""
+    from augur.monitoring.health import log_job_complete, log_job_start
+    from augur.projection.orchestrator import ProjectionOrchestrator
+
+    pool = app_state.raw_pool
+    llm = app_state.llm_client
+    log_id = await log_job_start(pool, "scenario_projection")
+    try:
+        orch = ProjectionOrchestrator(pool, llm)
+        results = await orch.run_all_dimensions()
+        n_scenarios = sum(len(r.scenarios) for r in results)
+        await log_job_complete(pool, log_id, n_processed=n_scenarios,
+                               metadata={"dimensions": len(results)})
+        log.info("scheduler.projection_done", n_scenarios=n_scenarios)
+    except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
+        log.error("scheduler.projection_failed", error=str(exc))
+
+
 async def _live_calibration_checkpoint_job(app_state: Any) -> None:
     """Weekly live calibration checkpoint: resolve pending signal outcomes."""
     from augur.calibration.live_tracker import checkpoint_live_outcomes
@@ -303,6 +323,17 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
         id="live_calibration_checkpoint",
         name="Live calibration checkpoint",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # Scenario projection: weekly, Sunday 06:00 UTC (after calibration checkpoint)
+    scheduler.add_job(
+        func=lambda: asyncio.ensure_future(_projection_job(app_state)),
+        trigger=CronTrigger(day_of_week="sun", hour=6, minute=0, timezone="UTC"),
+        id="scenario_projection",
+        name="Scenario projection",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
