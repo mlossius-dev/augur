@@ -19,6 +19,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from augur.api.health import router as health_router
+from augur.api.home import router as home_router
+from augur.api.reasoning import router as reasoning_router
 from augur.config import get_settings
 from augur.db.connection import close_db, init_db
 from augur.llm.client import LLMClient
@@ -87,6 +89,22 @@ def create_app() -> FastAPI:
     # ── Routers ───────────────────────────────────────────────────────────────
 
     app.include_router(health_router)
+    app.include_router(home_router)
+    app.include_router(reasoning_router)
+
+    # ── Static files (the presentation layer) ─────────────────────────────────
+
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    static_dir = Path(__file__).parent.parent.parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+        @app.get("/", include_in_schema=False)
+        async def serve_index():
+            return FileResponse(static_dir / "index.html")
 
     return app
 

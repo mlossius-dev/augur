@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Augur</title>
+  <link rel="stylesheet" href="/static/css/augur.css">
+</head>
+<body>
+
+<header id="site-header">
+  <h1>Augur</h1>
+  <span class="tagline">A reasoning prosthetic for understanding the present</span>
+  <nav class="nav-links">
+    <a href="#" onclick="showHomeView();return false">Home</a>
+    <a href="/docs" target="_blank">API</a>
+  </nav>
+</header>
+
+<!-- ── Home view ──────────────────────────────────────────────────────────── -->
+
+<div id="home-view">
+  <div class="page-container">
+
+    <!-- Level 1 + 2: Five dimensions -->
+    <div class="section-label" style="margin-top:20px">World trajectory</div>
+    <div id="dimensionGrid" class="dimension-grid">
+      <div class="loading">Loading…</div>
+    </div>
+
+    <!-- Level 3: What changed -->
+    <div class="changes-section">
+      <div class="section-label">What changed in the last 24 hours</div>
+      <div id="changesList">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Reasoning view ─────────────────────────────────────────────────────── -->
+
+<div id="reasoning-view" style="display:none">
+  <div class="page-container">
+    <div id="reasoning-content">
+      <div class="loading">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Time scrubber ──────────────────────────────────────────────────────── -->
+
+<div id="time-scrubber">
+  <span id="scrubber-label">Time scrubber</span>
+  <input id="scrubber-range" type="range" step="3600000">
+  <span id="scrubber-date">Now</span>
+  <button id="scrubber-now-btn">Now</button>
+</div>
+
+<script src="/static/js/reasoning.js"></script>
+<script src="/static/js/home.js"></script>
+
+</body>
+</html>
