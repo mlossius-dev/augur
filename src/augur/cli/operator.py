@@ -1037,6 +1037,363 @@ async def _inspect_disconfirmation_async(limit: int, outcome: str | None) -> Non
         await close_db()
 
 
+# ── augur calibrate ───────────────────────────────────────────────────────────
+
+calibrate_app = typer.Typer(
+    name="calibrate",
+    help="Calibration run management — create, execute, score, report, apply.",
+    add_completion=False,
+)
+app.add_typer(calibrate_app, name="calibrate")
+
+
+@calibrate_app.command("create")
+def calibrate_create(
+    window_start: Annotated[str, typer.Option("--start", help="Window start date YYYY-MM-DD")] = "2022-09-01",
+    window_end: Annotated[str, typer.Option("--end", help="Window end date YYYY-MM-DD")] = "2023-06-30",
+    observation_days: Annotated[int, typer.Option("--obs-days")] = 90,
+    sources: Annotated[str | None, typer.Option("--sources", help="Comma-separated source IDs")] = None,
+    lenses: Annotated[str | None, typer.Option("--lenses", help="Comma-separated lens IDs")] = None,
+    notes: Annotated[str, typer.Option("--notes")] = "",
+) -> None:
+    """
+    Create a new calibration run (status=configured, not yet started).
+
+    Defaults to the recommended first window: Sep 2022 – Jun 2023
+    (European energy crisis arc).
+    """
+    _run(_calibrate_create_async(
+        window_start, window_end, observation_days,
+        sources.split(",") if sources else None,
+        lenses.split(",") if lenses else None,
+        notes,
+    ))
+
+
+async def _calibrate_create_async(
+    window_start_str: str,
+    window_end_str: str,
+    observation_days: int,
+    source_subset: list[str] | None,
+    lens_subset: list[str] | None,
+    notes: str,
+) -> None:
+    from datetime import datetime, timezone
+    from augur.calibration.orchestrator import CalibrationOrchestrator
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        window_start = datetime.fromisoformat(window_start_str).replace(tzinfo=timezone.utc)
+        window_end = datetime.fromisoformat(window_end_str).replace(tzinfo=timezone.utc)
+
+        llm = LLMClient.from_settings(settings)
+        orch = CalibrationOrchestrator(pool, llm)
+        run = await orch.create_run(
+            window_start=window_start,
+            window_end=window_end,
+            observation_extension_days=observation_days,
+            source_subset=source_subset,
+            lens_subset=lens_subset,
+            notes=notes,
+        )
+        typer.secho(f"\nCalibration run created: {run.run_id}", fg=typer.colors.GREEN, bold=True)
+        typer.echo(f"  Window:       {window_start.date()} → {window_end.date()}")
+        typer.echo(f"  Obs. ext:     {observation_days} days")
+        typer.echo(f"  Sources:      {source_subset or 'all'}")
+        typer.echo(f"  Lenses:       {lens_subset or 'all'}")
+        typer.echo(f"  Status:       {run.status}")
+        typer.echo(f"\nRun 'augur calibrate execute --run-id {run.run_id}' to start.")
+    finally:
+        await close_db()
+
+
+@calibrate_app.command("execute")
+def calibrate_execute(
+    run_id: Annotated[str, typer.Option("--run-id", help="UUID of the calibration run")],
+) -> None:
+    """
+    Execute a configured calibration run end-to-end.
+
+    Phases: replay extraction → outcome resolution → leakage check → report.
+    This may take a long time for large windows.
+    """
+    _run(_calibrate_execute_async(run_id))
+
+
+async def _calibrate_execute_async(run_id_str: str) -> None:
+    import uuid as _uuid
+    from augur.calibration.orchestrator import CalibrationOrchestrator
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        run_id = _uuid.UUID(run_id_str)
+        llm = LLMClient.from_settings(settings)
+        orch = CalibrationOrchestrator(pool, llm)
+
+        run = await orch.get_run(run_id)
+        if run is None:
+            typer.secho(f"Run {run_id} not found.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        typer.echo(
+            f"Executing calibration run {run.run_id} "
+            f"({run.window_start.date()} → {run.window_end.date()})…"
+        )
+        run = await orch.execute_run(run)
+
+        typer.secho(f"\nCalibration run complete: {run.run_id}", fg=typer.colors.GREEN, bold=True)
+        if run.summary:
+            typer.echo(f"  Signals total:   {run.summary.get('n_signals_total', '?')}")
+            typer.echo(f"  Signals scored:  {run.summary.get('n_signals_scored', '?')}")
+            leakage = run.summary.get('leakage_rate')
+            if leakage is not None:
+                color = typer.colors.YELLOW if leakage > 0.05 else typer.colors.GREEN
+                typer.secho(f"  Leakage rate:    {leakage:.1%}", fg=color)
+            typer.echo(f"  Flagged sources: {run.summary.get('flagged_sources', [])}")
+            typer.echo(f"  Flagged lenses:  {run.summary.get('flagged_lenses', [])}")
+    finally:
+        await close_db()
+
+
+@calibrate_app.command("report")
+def calibrate_report(
+    run_id: Annotated[str, typer.Option("--run-id", help="UUID of the calibration run")],
+    format_: Annotated[str, typer.Option("--format", help="text|json")] = "text",
+) -> None:
+    """
+    Print the calibration report for a completed run.
+
+    Shows source scores (ordered by mean score), lens scores, leakage
+    detection results, and flagged sources/lenses.
+    """
+    _run(_calibrate_report_async(run_id, format_))
+
+
+async def _calibrate_report_async(run_id_str: str, format_: str) -> None:
+    import uuid as _uuid
+    from augur.calibration.orchestrator import CalibrationOrchestrator
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        run_id = _uuid.UUID(run_id_str)
+        llm = LLMClient.from_settings(settings)
+        orch = CalibrationOrchestrator(pool, llm)
+
+        run = await orch.get_run(run_id)
+        if run is None:
+            typer.secho(f"Run {run_id} not found.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        if not run.summary:
+            typer.secho("Run has no summary yet. Has it completed?", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+
+        if format_ == "json":
+            typer.echo(json.dumps(run.summary, indent=2))
+            return
+
+        s = run.summary
+        typer.secho(f"\nCalibration Report — Run {run.run_id}", bold=True)
+        typer.echo(f"  Window:         {run.window_start.date()} → {run.window_end.date()}")
+        typer.echo(f"  Signals total:  {s.get('n_signals_total', '?')}")
+        typer.echo(f"  Signals scored: {s.get('n_signals_scored', '?')}")
+        typer.echo(f"  Signals pending:{s.get('n_signals_pending', '?')}")
+        leakage = s.get("leakage_rate")
+        if leakage is not None:
+            color = typer.colors.YELLOW if leakage > 0.05 else typer.colors.GREEN
+            typer.secho(f"  Leakage rate:   {leakage:.1%}", fg=color)
+
+        typer.secho(f"\n{'SOURCE':30}  {'TIER':5}  {'N_SIG':6}  {'MEAN':6}  {'PRIOR':6}  {'PROP':6}  {'Δ':6}", bold=True)
+        typer.echo("─" * 80)
+        for src in s.get("source_scores", []):
+            delta = src["weight_delta"]
+            color = (
+                typer.colors.GREEN if delta > 0.05
+                else typer.colors.RED if delta < -0.05
+                else None
+            )
+            flag = " ⚑" if abs(delta) > 0.15 else ""
+            typer.secho(
+                f"  {src['source_id'][:28]:30}  "
+                f"{src['tier']:5}  "
+                f"{src['n_signals']:6}  "
+                f"{src['mean_score']:+.3f}  "
+                f"{src['prior_weight']:.3f}   "
+                f"{src['proposed_weight']:.3f}  "
+                f"{delta:+.3f}{flag}",
+                fg=color,
+            )
+
+        typer.secho(f"\n{'LENS':30}  {'N_SIG':6}  {'MEAN':6}  {'STATUS'}", bold=True)
+        typer.echo("─" * 70)
+        for lens in s.get("lens_scores", []):
+            color = typer.colors.YELLOW if lens.get("flagged") else None
+            flag = " ⚑" if lens.get("flagged") else ""
+            typer.secho(
+                f"  {lens['lens_id']:30}  "
+                f"{lens['n_signals']:6}  "
+                f"{lens['mean_score']:+.3f}  "
+                f"{'FLAGGED' if lens.get('flagged') else 'ok'}{flag}",
+                fg=color,
+            )
+
+        if s.get("flagged_sources"):
+            typer.secho(
+                f"\n⚑ Flagged sources (weight Δ > 15%): {s['flagged_sources']}",
+                fg=typer.colors.YELLOW,
+            )
+        if s.get("flagged_lenses"):
+            typer.secho(
+                f"⚑ Flagged lenses (mean_score < threshold): {s['flagged_lenses']}",
+                fg=typer.colors.YELLOW,
+            )
+    finally:
+        await close_db()
+
+
+@calibrate_app.command("apply-weights")
+def calibrate_apply_weights(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    sources: Annotated[str | None, typer.Option("--sources", help="Comma-separated source IDs to apply")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    """
+    Apply proposed source weight updates from a completed calibration run.
+
+    Operator approval gate — weights never apply automatically.
+    Use --dry-run to preview proposed updates without applying them.
+    """
+    _run(_calibrate_apply_weights_async(run_id, sources, dry_run))
+
+
+async def _calibrate_apply_weights_async(
+    run_id_str: str,
+    sources_str: str | None,
+    dry_run: bool,
+) -> None:
+    import uuid as _uuid
+    from augur.calibration.orchestrator import CalibrationOrchestrator
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        run_id = _uuid.UUID(run_id_str)
+        source_ids = sources_str.split(",") if sources_str else None
+
+        llm = LLMClient.from_settings(settings)
+        orch = CalibrationOrchestrator(pool, llm)
+        run = await orch.get_run(run_id)
+        if run is None:
+            typer.secho(f"Run {run_id} not found.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        if not run.summary:
+            typer.secho("Run has no summary yet.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        # Preview
+        source_scores = run.summary.get("source_scores", [])
+        applicable = [
+            s for s in source_scores
+            if source_ids is None or s["source_id"] in source_ids
+        ]
+
+        typer.secho(f"\nProposed weight updates ({len(applicable)} sources):\n", bold=True)
+        for s in applicable:
+            delta = s["weight_delta"]
+            color = typer.colors.GREEN if delta > 0 else typer.colors.RED if delta < 0 else None
+            typer.secho(
+                f"  {s['source_id']:35}  "
+                f"{s['prior_weight']:.3f} → {s['proposed_weight']:.3f}  "
+                f"({delta:+.3f})",
+                fg=color,
+            )
+
+        if dry_run:
+            typer.echo("\n(Dry run — no changes applied.)")
+            return
+
+        updates = await orch.apply_weights(run, source_ids=source_ids)
+        typer.secho(
+            f"\n{len(updates)} source weight(s) logged for application.",
+            fg=typer.colors.GREEN,
+            bold=True,
+        )
+        typer.echo("Review and commit to sources.yaml to make changes permanent.")
+    finally:
+        await close_db()
+
+
+@calibrate_app.command("list")
+def calibrate_list(
+    limit: Annotated[int, typer.Option("--limit")] = 10,
+) -> None:
+    """List recent calibration runs."""
+    _run(_calibrate_list_async(limit))
+
+
+async def _calibrate_list_async(limit: int) -> None:
+    import uuid as _uuid
+    from augur.calibration.orchestrator import CalibrationOrchestrator
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        llm = LLMClient.from_settings(settings)
+        orch = CalibrationOrchestrator(pool, llm)
+        runs = await orch.list_runs(limit=limit)
+
+        if not runs:
+            typer.echo("No calibration runs found.")
+            return
+
+        typer.secho(f"\n{'RUN_ID':38}  {'STATUS':12}  {'WINDOW':25}  {'CREATED'}", bold=True)
+        typer.echo("─" * 100)
+        for r in runs:
+            color = {
+                "complete": typer.colors.GREEN,
+                "running": typer.colors.CYAN,
+                "failed": typer.colors.RED,
+            }.get(r.status.value)
+            typer.secho(
+                f"  {str(r.run_id):36}  "
+                f"{r.status.value:12}  "
+                f"{str(r.window_start.date())} → {str(r.window_end.date())}  "
+                f"{r.created_at.strftime('%Y-%m-%d') if r.created_at else '?'}",
+                fg=color,
+            )
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
