@@ -6,6 +6,12 @@ Lenses run in parallel for the same payload (no cross-contamination).
 
 The executor validates the LLM output, enforces the max_signals cap,
 and returns structured signal dicts ready for Tier A storage.
+
+Phase 4 additions:
+  - extract_disconfirmation(): inline disconfirmation lens with graph context.
+  - detect_cross_lens_convergence(): groups signals from different lenses
+    that share identical claim_text hashes (Phase 4 simple version;
+    pgvector similarity deferred to Phase 5+).
 """
 
 from __future__ import annotations
@@ -124,6 +130,96 @@ class LensExecutor:
         )
         return signals
 
+    async def extract_disconfirmation(
+        self,
+        *,
+        payload_id: UUID,
+        content: str,
+        content_timestamp: datetime,
+        source_id: str,
+        edge_context_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Run the inline disconfirmation lens against a payload.
+
+        Args:
+            edge_context_rows: High-weight edges to challenge, each a dict with:
+                edge_id, source_name, target_name, edge_type, weight_band,
+                falsification_criteria.
+
+        Returns [] if no disconfirmation signals found or LLM fails.
+        """
+        from augur.extraction.lenses.disconfirmation import (
+            DISCONFIRMATION_LENS,
+            build_disconfirmation_system_prompt,
+        )
+        from augur.llm.models import PipelineStage
+
+        if not edge_context_rows:
+            return []
+
+        edge_context = _format_edge_context(edge_context_rows)
+        system_prompt = build_disconfirmation_system_prompt(edge_context)
+
+        user_message = f"<payload source_id={source_id!r}>\n{content}\n</payload>"
+
+        try:
+            response = await self._llm.complete(
+                stage=PipelineStage.EXTRACTION,
+                prompt_template_id="lens_disconfirmation_v1",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                metadata={
+                    "lens_id": "disconfirmation",
+                    "source_id": source_id,
+                    "payload_id": str(payload_id),
+                    "n_edges": len(edge_context_rows),
+                },
+            )
+        except Exception as exc:
+            log.warning(
+                "executor.disconfirmation_llm_failed",
+                payload_id=str(payload_id),
+                error=str(exc),
+            )
+            return []
+
+        raw_signals = _parse_llm_output(response.content, lens_id="disconfirmation")
+        if not raw_signals:
+            return []
+
+        raw_signals = raw_signals[: DISCONFIRMATION_LENS.max_signals]
+        extracted_at = datetime.now(timezone.utc)
+        signals: list[dict[str, Any]] = []
+
+        for raw in raw_signals:
+            validated = _validate_signal(raw, lens=DISCONFIRMATION_LENS)
+            if validated is None:
+                continue
+            signals.append(
+                {
+                    "signal_id": uuid.uuid4(),
+                    "payload_id": payload_id,
+                    "lens_id": DISCONFIRMATION_LENS.lens_id,
+                    "lens_version": DISCONFIRMATION_LENS.lens_version,
+                    "claim_text": validated["claim_text"],
+                    "confidence_band": validated["confidence_band"],
+                    "proposed_anchors": validated["proposed_anchors"],
+                    "reasoning": validated.get("reasoning"),
+                    "content_timestamp": content_timestamp,
+                    "extracted_at": extracted_at,
+                }
+            )
+
+        log.info(
+            "executor.disconfirmation_extracted",
+            payload_id=str(payload_id),
+            n_signals=len(signals),
+        )
+        return signals
+
     async def extract_all_lenses(
         self,
         *,
@@ -165,7 +261,59 @@ class LensExecutor:
         return signals
 
 
+# ── Cross-lens convergence detection ─────────────────────────────────────────
+
+
+def detect_cross_lens_convergence(
+    signals: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """
+    Group signals from different lenses that share the same claim_text hash.
+
+    Phase 4 uses hash equality (normalised lowercased text).  Phase 5+ will
+    use pgvector cosine similarity.
+
+    Returns a dict mapping claim_hash → [signal, ...] for groups where
+    multiple different lens_ids produced the same claim.
+    """
+    import hashlib
+
+    hash_groups: dict[str, list[dict[str, Any]]] = {}
+
+    for sig in signals:
+        text = str(sig.get("claim_text", "")).strip().lower()
+        h = hashlib.sha256(text.encode()).hexdigest()[:16]
+        hash_groups.setdefault(h, []).append(sig)
+
+    # Keep only groups where multiple distinct lenses contributed
+    convergent = {}
+    for h, group in hash_groups.items():
+        lens_ids = {s.get("lens_id") for s in group}
+        if len(lens_ids) > 1:
+            convergent[h] = group
+
+    return convergent
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _format_edge_context(rows: list[dict[str, Any]]) -> str:
+    """Format high-weight edges as numbered markdown for the disconfirmation prompt."""
+    lines: list[str] = []
+    for i, row in enumerate(rows, 1):
+        lines.append(
+            f"{i}. Edge `{row['edge_id']}`: "
+            f"**{row.get('source_name', '?')}** "
+            f"--{row.get('edge_type', '?')}--> "
+            f"**{row.get('target_name', '?')}** "
+            f"[{row.get('weight_band', '?')}]"
+        )
+        fc = row.get("falsification_criteria", "")
+        if fc:
+            lines.append(f"   *Falsification criteria*: {fc}")
+    return "\n".join(lines)
+
 
 def _parse_llm_output(content: str, *, lens_id: str) -> list[dict[str, Any]]:
     """

@@ -314,3 +314,257 @@ sources:
     starting_source_weight: 0.80
     enabled: true
     notes: Semi-independent Chinese business reporting. More reliable than state media on domestic economic data.
+
+  # ── Phase 4: Financial lenses ───────────────────────────────────────────────
+
+  - source_id: imf_cofer
+    canonical_name: IMF Currency Composition of Official Foreign Exchange Reserves (COFER)
+    url_base: https://data.imf.org
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: http
+    access_config:
+      url: https://data.imf.org/api/COFER
+      format: json
+    update_cadence: quarterly
+    domains: [financial]
+    starting_source_weight: 0.95
+    enabled: false
+    notes: Quarterly; IMF API. Phase 4 — disabled until API client built.
+
+  - source_id: ft_rss_markets
+    canonical_name: Financial Times Markets RSS
+    url_base: https://www.ft.com
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.ft.com/markets?format=rss
+          label: markets
+        - url: https://www.ft.com/central-banks?format=rss
+          label: central_banks
+    update_cadence: hourly
+    domains: [financial, geopolitical]
+    starting_source_weight: 0.88
+    enabled: true
+    notes: FT markets and central banks feeds. High-quality financial and policy coverage.
+
+  - source_id: bloomberg_rss
+    canonical_name: Bloomberg Markets RSS
+    url_base: https://www.bloomberg.com
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://feeds.bloomberg.com/markets/news.rss
+          label: markets
+    update_cadence: hourly
+    domains: [financial, commodities]
+    starting_source_weight: 0.90
+    enabled: true
+    notes: Bloomberg markets feed.
+
+  # ── Phase 4: Geopolitical sources ──────────────────────────────────────────
+
+  - source_id: ap_diplomacy_rss
+    canonical_name: AP Diplomacy RSS
+    url_base: https://apnews.com
+    tier: 2
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://apnews.com/hub/diplomacy?format=rss
+          label: diplomacy
+        - url: https://apnews.com/hub/united-nations?format=rss
+          label: united_nations
+    update_cadence: hourly
+    domains: [geopolitical]
+    starting_source_weight: 0.87
+    enabled: true
+    notes: AP diplomacy and UN feeds.
+
+  - source_id: tass_rss
+    canonical_name: TASS English RSS
+    url_base: https://tass.com
+    tier: 2
+    perspective: russia
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://tass.com/rss/v2.xml
+          label: all
+    update_cadence: hourly
+    domains: [geopolitical, commodities]
+    starting_source_weight: 0.45
+    enabled: true
+    notes: Russian state news agency. Low source weight; valuable for perspective divergence signals.
+
+  - source_id: aljazeera_rss
+    canonical_name: Al Jazeera English RSS
+    url_base: https://www.aljazeera.com
+    tier: 2
+    perspective: gulf
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.aljazeera.com/xml/rss/all.xml
+          label: all
+    update_cadence: hourly
+    domains: [geopolitical, commodities]
+    starting_source_weight: 0.72
+    enabled: true
+    notes: Gulf/Arab-world perspective. Good for Middle East geopolitics and Gulf energy.
+
+  - source_id: cgtn_rss
+    canonical_name: CGTN (China Global Television Network) RSS
+    url_base: https://www.cgtn.com
+    tier: 2
+    perspective: china
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.cgtn.com/subscribe/rss/section/world.do
+          label: world
+    update_cadence: hourly
+    domains: [geopolitical, financial]
+    starting_source_weight: 0.40
+    enabled: true
+    notes: Chinese state broadcaster. Low source weight; valuable for perspective and diplomatic signals.
+
+  - source_id: dawn_rss
+    canonical_name: Dawn (Pakistan) RSS
+    url_base: https://www.dawn.com
+    tier: 2
+    perspective: india
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.dawn.com/feeds/world-news
+          label: world_news
+    update_cadence: hourly
+    domains: [geopolitical, commodities]
+    starting_source_weight: 0.70
+    enabled: true
+    notes: South Asian perspective on regional geopolitics.
+
+  # ── Phase 4: Physical world sources ────────────────────────────────────────
+
+  - source_id: emsc_earthquakes
+    canonical_name: EMSC Earthquake Feed
+    url_base: https://www.emsc-csem.org
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: http
+    access_config:
+      url: https://www.seismicportal.eu/fdsnws/event/1/query?format=json&limit=50&minmag=4.5&orderby=time
+      format: json
+    update_cadence: hourly
+    domains: [physical_world]
+    starting_source_weight: 0.95
+    enabled: true
+    notes: EMSC FDSN-compliant earthquake feed. M4.5+ globally.
+
+  - source_id: noaa_severe_weather
+    canonical_name: NOAA Severe Weather RSS
+    url_base: https://www.weather.gov
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.weather.gov/rss_page.php?site_name=nws
+          label: nws_alerts
+    update_cadence: hourly
+    domains: [physical_world, commodities]
+    starting_source_weight: 0.93
+    enabled: true
+    notes: NWS severe weather alerts. US-focused but with commodity-chain implications.
+
+  - source_id: searxng_physical
+    canonical_name: SearXNG — Physical World
+    url_base: ${SEARXNG_URL}
+    tier: 3
+    perspective: us_eu
+    languages: [en]
+    access_method: searxng
+    access_config:
+      queries:
+        - query: "earthquake tsunami port closure shipping disruption"
+          category: news
+        - query: "pipeline explosion refinery fire infrastructure outage"
+          category: news
+      max_results_per_query: 10
+    update_cadence: hourly
+    domains: [physical_world, commodities]
+    starting_source_weight: 0.50
+    enabled: true
+    notes: SearXNG queries for physical infrastructure and natural event signals.
+
+  # ── Phase 4: Regulatory sources ────────────────────────────────────────────
+
+  - source_id: federal_register_rss
+    canonical_name: US Federal Register RSS
+    url_base: https://www.federalregister.gov
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://www.federalregister.gov/documents/search.rss?conditions[sections][]=PROPOSED_RULES&conditions[sections][]=RULES
+          label: rules
+    update_cadence: daily
+    domains: [regulatory]
+    starting_source_weight: 0.95
+    enabled: true
+    notes: US Federal Register rules and proposed rules. Authoritative source for US regulation.
+
+  - source_id: ofac_rss
+    canonical_name: US Treasury OFAC Recent Actions RSS
+    url_base: https://ofac.treasury.gov
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: rss
+    access_config:
+      feeds:
+        - url: https://home.treasury.gov/policy-issues/financial-sanctions/recent-actions/rss
+          label: recent_actions
+    update_cadence: daily
+    domains: [regulatory, geopolitical]
+    starting_source_weight: 0.97
+    enabled: true
+    notes: OFAC sanctions designations. Very high source weight — official US Treasury.
+
+  - source_id: searxng_regulatory
+    canonical_name: SearXNG — Regulatory
+    url_base: ${SEARXNG_URL}
+    tier: 3
+    perspective: us_eu
+    languages: [en]
+    access_method: searxng
+    access_config:
+      queries:
+        - query: "sanctions imposed export controls trade restrictions regulation"
+          category: news
+        - query: "court ruling regulatory enforcement antitrust central bank policy"
+          category: news
+      max_results_per_query: 10
+    update_cadence: hourly
+    domains: [regulatory, geopolitical]
+    starting_source_weight: 0.50
+    enabled: true
+    notes: SearXNG queries for regulatory and sanctions signals.

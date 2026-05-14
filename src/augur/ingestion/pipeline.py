@@ -18,6 +18,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from augur.ingestion.api_clients.emsc import EmscClient
 from augur.ingestion.api_clients.fred import FredClient
 from augur.ingestion.api_clients.usgs import UsgsClient
 from augur.ingestion.archiver import PayloadArchiver
@@ -165,18 +166,18 @@ class IngestionPipeline:
                 log.warning("ingestion.unknown_api_source", source_id=source_id)
                 return []
 
-        elif method == "searxng":
-            if not self._searxng_url:
-                log.warning("ingestion.searxng_url_missing")
-                return []
-            # Substitute the env var in url_base if it hasn't been expanded
-            effective_url = self._searxng_url or source.url_base
-            fetcher = SearxngFetcher(effective_url)
-            return await fetcher.fetch_source(source)
-
         elif method == "http":
-            # Generic HTTP: configured via access_config.urls list
+            # Dispatch structured-data HTTP sources to dedicated clients
+            source_id = source.source_id
+            if source_id == "emsc_earthquakes":
+                client = EmscClient()
+                return await client.fetch_source(source)
+
+            # Generic HTTP: configured via access_config.url or urls list
             urls: list[str] = source.access_config.get("urls", [])
+            single_url: str = source.access_config.get("url", "")
+            if single_url:
+                urls = [single_url] + urls
             from augur.ingestion.fetchers.http import HttpFetcher
             results: list[FetchResult] = []
             async with HttpFetcher() as fetcher:
@@ -191,6 +192,15 @@ class IngestionPipeline:
                     except Exception as exc:
                         log.warning("ingestion.http_fetch_failed", url=url, error=str(exc))
             return results
+
+        elif method == "searxng":
+            if not self._searxng_url:
+                log.warning("ingestion.searxng_url_missing")
+                return []
+            # Substitute the env var in url_base if it hasn't been expanded
+            effective_url = self._searxng_url or source.url_base
+            fetcher = SearxngFetcher(effective_url)
+            return await fetcher.fetch_source(source)
 
         else:
             log.warning("ingestion.unknown_method", method=method, source_id=source.source_id)

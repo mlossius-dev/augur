@@ -49,9 +49,9 @@ async def _ingestion_job(app_state: Any) -> None:
 
 
 async def _extraction_job(app_state: Any) -> None:
-    """Hourly extraction: run lenses over recently ingested payloads."""
-    from augur.extraction.executor import LensExecutor
-    from augur.extraction.lenses.commodities import COMMODITIES_LENS
+    """Hourly extraction: run all active lenses over recently ingested payloads."""
+    from augur.extraction.executor import LensExecutor, detect_cross_lens_convergence
+    from augur.extraction.lenses import ACTIVE_LENSES
     from augur.extraction.tier_a import TierAStore
 
     pool = app_state.raw_pool
@@ -62,7 +62,7 @@ async def _extraction_job(app_state: Any) -> None:
 
     # Pull payloads ingested in the last 2 hours that have no signals yet
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
+        payload_rows = await conn.fetch(
             """
             SELECT p.payload_id, p.content, p.content_timestamp, p.source_id
             FROM payloads p
@@ -76,23 +76,69 @@ async def _extraction_job(app_state: Any) -> None:
             """,
         )
 
-    if not rows:
+        # Fetch high-weight edges for the inline disconfirmation lens
+        disconf_edge_rows = await conn.fetch(
+            """
+            SELECT e.edge_id,
+                   sn.name AS source_name,
+                   tn.name AS target_name,
+                   e.edge_type,
+                   e.current_weight_band AS weight_band,
+                   e.falsification_criteria
+            FROM edges e
+            JOIN nodes sn ON sn.node_id = e.source_node_id
+            JOIN nodes tn ON tn.node_id = e.target_node_id
+            WHERE e.current_weight_band IN ('strong', 'moderate')
+              AND NOT e.deprecated
+              AND e.falsification_criteria != ''
+            ORDER BY e.updated_at DESC
+            LIMIT 30
+            """,
+        )
+
+    if not payload_rows:
         log.debug("scheduler.extraction_no_payloads")
         return
 
-    log.info("scheduler.extraction_start", n_payloads=len(rows))
-    lenses = [COMMODITIES_LENS]
+    edge_context = [dict(r) for r in disconf_edge_rows]
+    log.info(
+        "scheduler.extraction_start",
+        n_payloads=len(payload_rows),
+        n_disconf_edges=len(edge_context),
+    )
     total_signals = 0
 
-    for row in rows:
+    for row in payload_rows:
+        # Run all standard lenses in parallel
         signals = await executor.extract_all_lenses(
             payload_id=row["payload_id"],
             content=row["content"],
             content_timestamp=row["content_timestamp"],
             source_id=row["source_id"],
-            lenses=lenses,
+            lenses=ACTIVE_LENSES,
         )
+
+        # Run inline disconfirmation if we have high-weight edges
+        if edge_context:
+            disconf_signals = await executor.extract_disconfirmation(
+                payload_id=row["payload_id"],
+                content=row["content"],
+                content_timestamp=row["content_timestamp"],
+                source_id=row["source_id"],
+                edge_context_rows=edge_context,
+            )
+            signals.extend(disconf_signals)
+
         if signals:
+            # Log cross-lens convergence (informational; not stored separately yet)
+            convergent = detect_cross_lens_convergence(signals)
+            if convergent:
+                log.info(
+                    "scheduler.cross_lens_convergence",
+                    payload_id=str(row["payload_id"]),
+                    n_convergent_groups=len(convergent),
+                )
+
             signals = await tier_a.deduplicate_batch(signals)
             stored = await tier_a.store_signals(signals)
             total_signals += stored

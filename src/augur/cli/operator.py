@@ -607,7 +607,7 @@ async def _extract_async(
     from augur.config import get_settings
     from augur.db.connection import close_db, get_raw_pool, init_db
     from augur.extraction.executor import LensExecutor
-    from augur.extraction.lenses import COMMODITIES_LENS
+    from augur.extraction.lenses import ACTIVE_LENSES
     from augur.extraction.tier_a import TierAStore
     from augur.llm.client import LLMClient
 
@@ -616,7 +616,7 @@ async def _extract_async(
     await init_db(settings)
     pool = get_raw_pool()
 
-    lenses_map = {"commodities": COMMODITIES_LENS}
+    lenses_map = {l.lens_id: l for l in ACTIVE_LENSES}
     lens = lenses_map.get(lens_id)
     if lens is None:
         typer.secho(f"Unknown lens: {lens_id!r}. Available: {list(lenses_map)}", fg=typer.colors.RED)
