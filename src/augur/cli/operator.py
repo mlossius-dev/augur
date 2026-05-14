@@ -860,6 +860,183 @@ async def _inspect_anchoring_async(limit: int, lens_id: str | None, pending: boo
         await close_db()
 
 
+# ── augur disconfirm ──────────────────────────────────────────────────────────
+
+
+@app.command("disconfirm")
+def disconfirm(
+    limit: Annotated[int, typer.Option("--limit", help="Max edges to challenge")] = 20,
+    rechallenge_days: Annotated[int, typer.Option("--rechallenge-days")] = 7,
+    signal_window_days: Annotated[int, typer.Option("--signal-window-days")] = 7,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show selected edges, do not challenge")] = False,
+) -> None:
+    """
+    Manually trigger one disconfirmation pass.
+
+    Selects high-weight edges that haven't been recently challenged,
+    calls the strong model to look for falsifying evidence in recent
+    Tier A signals, and applies results through the Applier.
+    """
+    _run(_disconfirm_async(limit, rechallenge_days, signal_window_days, dry_run))
+
+
+async def _disconfirm_async(
+    limit: int,
+    rechallenge_days: int,
+    signal_window_days: int,
+    dry_run: bool,
+) -> None:
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.disconfirmation.orchestrator import DisconfirmationOrchestrator
+    from augur.disconfirmation.selector import select_edges
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        if dry_run:
+            edges = await select_edges(
+                pool,
+                limit=limit,
+                rechallenge_days=rechallenge_days,
+            )
+            typer.secho(f"\nDry run: {len(edges)} edge(s) selected for challenge\n", bold=True)
+            for e in edges:
+                typer.secho(
+                    f"  [{e['current_weight_band']}] "
+                    f"{e['source_name']} --{e['edge_type']}--> {e['target_name']}",
+                    fg=typer.colors.CYAN,
+                )
+                typer.echo(f"    Edge ID:           {e['edge_id']}")
+                typer.echo(f"    Last challenged:   {e.get('last_disconfirmation_pass') or 'never'}")
+                typer.echo(f"    Falsification:     {e.get('falsification_criteria', '')[:120]}")
+                typer.echo("")
+            return
+
+        from augur.llm.client import LLMClient
+        llm = LLMClient.from_settings(settings)
+        orchestrator = DisconfirmationOrchestrator(pool, llm)
+
+        typer.echo(
+            f"Starting disconfirmation pass "
+            f"(limit={limit}, rechallenge_days={rechallenge_days}, "
+            f"signal_window={signal_window_days}d)…"
+        )
+        result = await orchestrator.run_pass(
+            limit=limit,
+            rechallenge_days=rechallenge_days,
+            signal_window_days=signal_window_days,
+        )
+
+        typer.secho(f"\nDisconfirmation pass complete", bold=True)
+        typer.echo(f"  Edges challenged:        {result.n_edges_challenged}")
+        typer.echo(f"  Disconfirmation found:   {result.n_found}")
+        typer.echo(f"  No disconfirmation:      {result.n_not_found}")
+        typer.echo(f"  Errors:                  {result.n_error}")
+        typer.echo(f"  Operations applied:      {result.n_operations_applied}")
+        typer.echo(f"  Operations rejected:     {result.n_operations_rejected}")
+
+        for er in result.edge_results:
+            color = (
+                typer.colors.RED if er.outcome == "found"
+                else typer.colors.GREEN if er.outcome == "not_found"
+                else typer.colors.YELLOW
+            )
+            typer.secho(
+                f"\n  [{er.outcome.upper()}] Edge {er.edge_id}",
+                fg=color,
+            )
+            if er.reasoning:
+                typer.echo(f"    {er.reasoning[:200]}")
+            if er.llm_error:
+                typer.secho(f"    LLM error: {er.llm_error}", fg=typer.colors.RED)
+    finally:
+        await close_db()
+
+
+# ── augur inspect-disconfirmation ─────────────────────────────────────────────
+
+
+@app.command("inspect-disconfirmation")
+def inspect_disconfirmation(
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+    outcome: Annotated[str | None, typer.Option("--outcome", help="found|not_found|error")] = None,
+) -> None:
+    """
+    Review recent disconfirmation pass events.
+
+    Shows which edges were challenged, the outcome, and the LLM reasoning.
+    Use --outcome found to see edges that were weakened.
+    """
+    _run(_inspect_disconfirmation_async(limit, outcome))
+
+
+async def _inspect_disconfirmation_async(limit: int, outcome: str | None) -> None:
+    from augur.db.connection import close_db, get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        async with pool.acquire() as conn:
+            if outcome:
+                rows = await conn.fetch(
+                    """
+                    SELECT dpe.*, e.current_weight_band,
+                           sn.name AS source_name, tn.name AS target_name,
+                           e.edge_type
+                    FROM disconfirmation_pass_events dpe
+                    JOIN edges e ON e.edge_id = dpe.edge_id
+                    JOIN nodes sn ON sn.node_id = e.source_node_id
+                    JOIN nodes tn ON tn.node_id = e.target_node_id
+                    WHERE dpe.outcome = $1
+                    ORDER BY dpe.challenged_at DESC LIMIT $2
+                    """,
+                    outcome, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT dpe.*, e.current_weight_band,
+                           sn.name AS source_name, tn.name AS target_name,
+                           e.edge_type
+                    FROM disconfirmation_pass_events dpe
+                    JOIN edges e ON e.edge_id = dpe.edge_id
+                    JOIN nodes sn ON sn.node_id = e.source_node_id
+                    JOIN nodes tn ON tn.node_id = e.target_node_id
+                    ORDER BY dpe.challenged_at DESC LIMIT $1
+                    """,
+                    limit,
+                )
+
+        typer.secho(f"\nDisconfirmation pass events ({len(rows)} found)\n", bold=True)
+        for row in rows:
+            oc = row["outcome"]
+            color = (
+                typer.colors.RED if oc == "found"
+                else typer.colors.GREEN if oc == "not_found"
+                else typer.colors.YELLOW
+            )
+            typer.secho(
+                f"  [{oc.upper()}] "
+                f"{row['source_name']} --{row['edge_type']}--> {row['target_name']} "
+                f"[{row['current_weight_band']}]",
+                fg=color,
+            )
+            typer.echo(f"    Edge:      {row['edge_id']}")
+            typer.echo(f"    Challenged:{row['challenged_at'].strftime('%Y-%m-%d %H:%M UTC')}")
+            typer.echo(f"    Signals reviewed: {len(row['signals_reviewed'])}")
+            if row.get("reasoning"):
+                typer.echo(f"    Reasoning: {row['reasoning'][:200]}")
+            typer.echo("")
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

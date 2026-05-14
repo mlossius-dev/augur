@@ -1,10 +1,12 @@
 """
 APScheduler configuration for the Augur pipeline.
 
-Three recurring jobs:
-  - ingestion_job:  runs every hour at :00, fetches new payloads from all sources
-  - extraction_job: runs every hour at :10, extracts signals from recent payloads
-  - anchoring_job:  runs every hour at :25, anchors signals into the causal graph
+Four recurring jobs:
+  - ingestion_job:       hourly at :00 — fetch payloads from all sources
+  - extraction_job:      hourly at :10 — extract signals from recent payloads
+  - anchoring_job:       hourly at :25 — anchor signals into the causal graph
+  - disconfirmation_job: weekly (Sunday 02:00 UTC) — periodic challenge of
+                         high-weight edges
 
 Jobs are registered on the FastAPI app lifespan and share the application's
 asyncpg pool.
@@ -146,6 +148,31 @@ async def _extraction_job(app_state: Any) -> None:
     log.info("scheduler.extraction_done", n_signals=total_signals)
 
 
+async def _disconfirmation_job(app_state: Any) -> None:
+    """Weekly disconfirmation pass: challenge high-weight edges."""
+    from augur.disconfirmation.orchestrator import DisconfirmationOrchestrator
+
+    pool = app_state.raw_pool
+    llm_client = app_state.llm_client
+
+    orchestrator = DisconfirmationOrchestrator(pool, llm_client)
+    try:
+        result = await orchestrator.run_pass(
+            limit=20,
+            rechallenge_days=7,
+            signal_window_days=7,
+        )
+        log.info(
+            "scheduler.disconfirmation_done",
+            n_edges=result.n_edges_challenged,
+            n_found=result.n_found,
+            n_not_found=result.n_not_found,
+            n_applied=result.n_operations_applied,
+        )
+    except Exception as exc:
+        log.error("scheduler.disconfirmation_failed", error=str(exc))
+
+
 async def _anchoring_job(app_state: Any) -> None:
     """Hourly anchoring: convert unanchored signals into graph mutations."""
     from augur.anchoring.orchestrator import AnchoringOrchestrator
@@ -210,6 +237,18 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,
+    )
+
+    # Disconfirmation: weekly, Sunday 02:00 UTC
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler.add_job(
+        func=lambda: asyncio.ensure_future(_disconfirmation_job(app_state)),
+        trigger=CronTrigger(day_of_week="sun", hour=2, minute=0, timezone="UTC"),
+        id="disconfirmation",
+        name="Disconfirmation pass",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
 
     return scheduler
