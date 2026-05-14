@@ -25,15 +25,17 @@ async function loadReasoning(type, id) {
 }
 
 function showReasoningView() {
-  document.getElementById('home-view').style.display = 'none';
-  const rv = document.getElementById('reasoning-view');
-  rv.style.display = 'block';
+  const views = ['home-view', 'topic-view', 'topic-list-view'];
+  views.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  document.getElementById('reasoning-view').style.display = 'block';
   window.scrollTo(0, 0);
 }
 
 function showHomeView() {
   document.getElementById('home-view').style.display = 'block';
-  document.getElementById('reasoning-view').style.display = 'none';
+  ['reasoning-view', 'topic-view', 'topic-list-view'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
   window.scrollTo(0, 0);
 }
 

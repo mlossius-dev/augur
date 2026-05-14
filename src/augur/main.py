@@ -18,9 +18,11 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from augur.api.geo import router as geo_router
 from augur.api.health import router as health_router
 from augur.api.home import router as home_router
 from augur.api.reasoning import router as reasoning_router
+from augur.api.topics import router as topics_router
 from augur.config import get_settings
 from augur.db.connection import close_db, init_db
 from augur.llm.client import LLMClient
@@ -91,6 +93,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(home_router)
     app.include_router(reasoning_router)
+    app.include_router(topics_router)
+    app.include_router(geo_router)
 
     # ── Static files (the presentation layer) ─────────────────────────────────
 

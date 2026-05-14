@@ -1639,6 +1639,152 @@ async def _monitor_weights_async(source_id: str | None) -> None:
         await close_db()
 
 
+# ── Shared pool helper (used by monitor_* commands) ───────────────────────────
+
+
+async def _get_pool():
+    from augur.config import get_settings
+    from augur.db.connection import close_db as _close_db
+    from augur.db.connection import get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    return get_raw_pool(), _close_db
+
+
+# ── augur topics ──────────────────────────────────────────────────────────────
+
+topics_app = typer.Typer(
+    name="topics",
+    help="Topic management — create, list, and assign nodes to operator-curated topics.",
+    add_completion=False,
+)
+app.add_typer(topics_app, name="topics")
+
+
+@topics_app.command("create")
+def topics_create(
+    name: Annotated[str, typer.Argument(help="Topic name (unique)")],
+    description: Annotated[str, typer.Option("--desc", help="Short description")] = "",
+    dimension: Annotated[str | None, typer.Option("--dimension", "-d", help="One of the five dimensions")] = None,
+) -> None:
+    """Create a new operator topic."""
+    _run(_topics_create_async(name, description, dimension))
+
+
+async def _topics_create_async(name: str, description: str, dimension: str | None) -> None:
+    from augur.presentation.topics import create_topic
+
+    pool, close_db = await _get_pool()
+    try:
+        topic_id = await create_topic(pool, name=name, description=description, dimension=dimension)
+        typer.secho(f"\nTopic created: {topic_id}", fg=typer.colors.GREEN, bold=True)
+        typer.echo(f"  Name:      {name}")
+        if description:
+            typer.echo(f"  Desc:      {description}")
+        if dimension:
+            typer.echo(f"  Dimension: {dimension}")
+    finally:
+        await close_db()
+
+
+@topics_app.command("list")
+def topics_list() -> None:
+    """List all topics with node counts."""
+    _run(_topics_list_async())
+
+
+async def _topics_list_async() -> None:
+    from augur.presentation.topics import get_topic_list
+
+    pool, close_db = await _get_pool()
+    try:
+        topics = await get_topic_list(pool)
+        if not topics:
+            typer.echo("No topics found.")
+            return
+
+        typer.secho(f"\n{'TOPIC_ID':38}  {'NAME':30}  {'DIM':22}  {'NODES':6}  {'ACTIVE':6}  STATE", bold=True)
+        typer.echo("─" * 120)
+        for t in topics:
+            typer.echo(
+                f"  {t.topic_id:36}  "
+                f"{t.name[:28]:30}  "
+                f"{(t.dimension or '—')[:20]:22}  "
+                f"{t.node_count:6}  "
+                f"{t.active_condition_count:6}  "
+                f"{t.state}"
+            )
+        typer.echo(f"\n{len(topics)} topic(s).")
+    finally:
+        await close_db()
+
+
+@topics_app.command("assign")
+def topics_assign(
+    topic_id: Annotated[str, typer.Option("--topic", "-t", help="Topic UUID")],
+    node_ids: Annotated[str, typer.Option("--nodes", "-n", help="Comma-separated node UUIDs")],
+    notes: Annotated[str, typer.Option("--notes")] = "",
+) -> None:
+    """Assign one or more nodes to a topic."""
+    _run(_topics_assign_async(topic_id, node_ids.split(","), notes))
+
+
+async def _topics_assign_async(topic_id: str, node_ids: list[str], notes: str) -> None:
+    from augur.presentation.topics import assign_nodes_to_topic
+
+    pool, close_db = await _get_pool()
+    try:
+        inserted = await assign_nodes_to_topic(pool, topic_id=topic_id, node_ids=node_ids, notes=notes)
+        typer.secho(f"Assigned {inserted} node(s) to topic {topic_id}.", fg=typer.colors.GREEN)
+    finally:
+        await close_db()
+
+
+@topics_app.command("nodes")
+def topics_nodes(
+    topic_id: Annotated[str, typer.Argument(help="Topic UUID")],
+) -> None:
+    """Show all nodes assigned to a topic."""
+    _run(_topics_nodes_async(topic_id))
+
+
+async def _topics_nodes_async(topic_id: str) -> None:
+    from augur.presentation.topics import get_topic_detail
+
+    pool, close_db = await _get_pool()
+    try:
+        detail = await get_topic_detail(pool, topic_id)
+        if detail is None:
+            typer.secho(f"Topic {topic_id} not found.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        typer.secho(f"\nTopic: {detail.name}", bold=True)
+        typer.echo(f"  State: {detail.state}  |  {detail.active_condition_count}/{detail.node_count} active conditions")
+        typer.echo("")
+
+        if not detail.nodes:
+            typer.echo("  (no nodes assigned)")
+            return
+
+        typer.secho(f"  {'NODE_ID':38}  {'NAME':40}  {'TYPE':12}  STATE", bold=True)
+        typer.echo("  " + "─" * 105)
+        for n in detail.nodes:
+            state = n.current_state or "—"
+            color = typer.colors.RED if state == "active" else None
+            typer.secho(
+                f"  {n.node_id:36}  "
+                f"{n.name[:38]:40}  "
+                f"{n.node_type:12}  "
+                f"{state}",
+                fg=color,
+            )
+        typer.echo()
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

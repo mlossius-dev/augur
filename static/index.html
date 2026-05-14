@@ -13,6 +13,7 @@
   <span class="tagline">A reasoning prosthetic for understanding the present</span>
   <nav class="nav-links">
     <a href="#" onclick="showHomeView();return false">Home</a>
+    <a href="#" onclick="showTopicListView();return false">Topics</a>
     <a href="/docs" target="_blank">API</a>
   </nav>
 </header>
@@ -39,6 +40,27 @@
   </div>
 </div>
 
+<!-- ── Topic list view ────────────────────────────────────────────────────── -->
+
+<div id="topic-list-view" style="display:none">
+  <div class="page-container">
+    <div class="section-label" style="margin-top:20px">Topics</div>
+    <div id="topic-list-content">
+      <div class="loading">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Topic detail view ──────────────────────────────────────────────────── -->
+
+<div id="topic-view" style="display:none">
+  <div class="page-container">
+    <div id="topic-content">
+      <div class="loading">Loading…</div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Reasoning view ─────────────────────────────────────────────────────── -->
 
 <div id="reasoning-view" style="display:none">
@@ -58,6 +80,7 @@
   <button id="scrubber-now-btn">Now</button>
 </div>
 
+<script src="/static/js/topic.js"></script>
 <script src="/static/js/reasoning.js"></script>
 <script src="/static/js/home.js"></script>
 

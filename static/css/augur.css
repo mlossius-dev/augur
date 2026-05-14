@@ -521,3 +521,60 @@ a:hover { text-decoration: underline; }
 .mt-16 { margin-top: 16px; }
 .muted { color: var(--text-muted); }
 .mono  { font-family: var(--font-mono); font-size: 0.85em; }
+
+/* ── Topic view ─────────────────────────────────────────────────────────────── */
+
+.topic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.topic-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.topic-card:hover {
+  border-color: var(--link);
+}
+
+.topic-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.topic-dimension {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.topic-state {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.topic-stats {
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  margin-top: 6px;
+}
+
+.topic-desc {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  margin-top: 6px;
+  line-height: 1.4;
+}

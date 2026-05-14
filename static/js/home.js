@@ -138,14 +138,10 @@ function drillChange(targetType, targetId) {
 }
 
 function drillDimension(dimension) {
-  // For Phase 8 minimal, show a note — topic view comes in Phase 9
-  const msg = `Topic view for "${dimension}" will be available in the next phase.`;
-  // Still useful: filter changes by this dimension
+  // Filter changes by dimension inline; use Topics nav for full topic view
   if (state.data) {
     const filtered = state.data.changes.filter(c => c.dimension === dimension);
-    if (filtered.length > 0) {
-      renderChanges(filtered);
-    }
+    renderChanges(filtered.length > 0 ? filtered : state.data.changes);
   }
 }
 
