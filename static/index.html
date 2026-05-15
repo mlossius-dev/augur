@@ -45,6 +45,21 @@
       </div>
     </div>
 
+    <!-- Level 5: Ask Augur -->
+    <div class="changes-section">
+      <div class="section-label" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Ask Augur</span>
+        <button class="conv-clear-btn" onclick="clearConversation()">Clear</button>
+      </div>
+      <div id="conv-log" class="conv-log"></div>
+      <form id="conv-form" class="conv-form">
+        <input id="conv-input" class="conv-input" type="text"
+               placeholder="Ask about the current state of the world…"
+               autocomplete="off" maxlength="500">
+        <button type="submit" class="conv-submit">Ask</button>
+      </form>
+    </div>
+
   </div>
 </div>
 
@@ -92,6 +107,7 @@
 <script src="/static/js/topic.js"></script>
 <script src="/static/js/reasoning.js"></script>
 <script src="/static/js/home.js"></script>
+<script src="/static/js/conversation.js"></script>
 
 </body>
 </html>

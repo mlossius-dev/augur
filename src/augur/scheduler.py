@@ -222,6 +222,18 @@ async def _anchoring_job(app_state: Any) -> None:
         log.error("scheduler.anchoring_failed", error=str(exc))
 
 
+async def _prune_sessions_job(app_state: Any) -> None:
+    """Weekly session pruning: remove stale conversation sessions."""
+    from augur.conversation.session import prune_sessions
+
+    pool = app_state.raw_pool
+    try:
+        deleted = await prune_sessions(pool, max_age_hours=48)
+        log.info("scheduler.prune_sessions_done", deleted=deleted)
+    except Exception as exc:
+        log.error("scheduler.prune_sessions_failed", error=str(exc))
+
+
 async def _projection_job(app_state: Any) -> None:
     """Weekly scenario projection: generate scenarios for all five dimensions."""
     from augur.monitoring.health import log_job_complete, log_job_start
@@ -334,6 +346,17 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=CronTrigger(day_of_week="sun", hour=6, minute=0, timezone="UTC"),
         id="scenario_projection",
         name="Scenario projection",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # Session pruning: weekly, Sunday 07:00 UTC
+    scheduler.add_job(
+        func=lambda: asyncio.ensure_future(_prune_sessions_job(app_state)),
+        trigger=CronTrigger(day_of_week="sun", hour=7, minute=0, timezone="UTC"),
+        id="prune_sessions",
+        name="Prune stale conversation sessions",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,

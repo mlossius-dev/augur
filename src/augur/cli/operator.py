@@ -1902,6 +1902,67 @@ async def _project_async(
         await close_db()
 
 
+# ── augur ask ─────────────────────────────────────────────────────────────────
+
+
+@app.command("ask")
+def ask(
+    question: Annotated[str, typer.Argument(help="Question to ask about the world state")],
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session", "-s", help="Continue an existing conversation session"),
+    ] = None,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show evidence context")] = False,
+) -> None:
+    """
+    Ask a question about the world state, grounded in graph evidence.
+
+    Augur retrieves relevant graph nodes, edges, and signals, then calls the
+    LLM to synthesise a grounded answer.  Pass --session to continue a
+    multi-turn conversation.
+    """
+    _run(_ask_async(question, session_id, verbose))
+
+
+async def _ask_async(question: str, session_id: str | None, verbose: bool) -> None:
+    from augur.config import get_settings
+    from augur.conversation.orchestrator import ConversationOrchestrator
+    from augur.db.connection import close_db, get_raw_pool, init_db
+    from augur.llm.client import LLMClient
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        llm = LLMClient.from_settings(settings)
+        orch = ConversationOrchestrator(pool, llm)
+
+        typer.echo(f"\nAsking: {question}\n")
+        turn = await orch.ask(question, session_id=session_id)
+
+        typer.secho("Answer:", bold=True)
+        typer.echo(f"\n{turn.answer}\n")
+
+        if verbose:
+            typer.secho("Evidence context:", fg=typer.colors.CYAN)
+            typer.echo(f"  Nodes matched:   {len(turn.context.matched_nodes)}")
+            for n in turn.context.matched_nodes[:5]:
+                state = f" [ACTIVE]" if n["current_state"] == "active" else ""
+                typer.echo(f"    • {n['name']}{state}")
+            typer.echo(f"  Edges retrieved: {len(turn.context.connected_edges)}")
+            typer.echo(f"  Signals used:    {len(turn.context.recent_signals)}")
+
+        typer.secho(
+            f"\n[Session: {turn.session_id}  |  Model: {turn.model_used}]",
+            fg=typer.colors.WHITE,
+        )
+        typer.echo("  Pass --session to continue this conversation.")
+    finally:
+        await close_db()
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

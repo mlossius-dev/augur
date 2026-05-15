@@ -18,6 +18,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from augur.api.conversation import router as conversation_router
 from augur.api.geo import router as geo_router
 from augur.api.health import router as health_router
 from augur.api.home import router as home_router
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(topics_router)
     app.include_router(geo_router)
     app.include_router(scenarios_router)
+    app.include_router(conversation_router)
 
     # ── Static files (the presentation layer) ─────────────────────────────────
 
