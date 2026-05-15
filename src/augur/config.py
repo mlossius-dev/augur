@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # Whether to start the APScheduler in this process
     enable_scheduler: bool = True
 
+    # ── Security ──────────────────────────────────────────────────────────────
+    # When set, every /api/* request must include a matching X-API-Key header.
+    # Unset (None) means open access — suitable for local development only.
+    augur_api_key: str | None = None
+    # Max POST /api/conversation/query requests per IP per 60-second window.
+    conv_rate_limit_per_minute: int = 10
+
     @field_validator("log_level")
     @classmethod
     def normalise_log_level(cls, v: str) -> str:

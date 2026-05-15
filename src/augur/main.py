@@ -29,6 +29,7 @@ from augur.config import get_settings
 from augur.db.connection import close_db, init_db
 from augur.llm.client import LLMClient
 from augur.logging import configure_logging
+from augur.middleware import APIKeyMiddleware, ConversationRateLimitMiddleware
 
 log = structlog.get_logger(__name__)
 
@@ -56,6 +57,16 @@ def create_app() -> FastAPI:
         allow_origins=["*"] if not settings.is_production else [],
         allow_methods=["GET"],
         allow_headers=["*"],
+    )
+
+    # Rate limiting must be added before auth so the IP bucket is checked first.
+    app.add_middleware(
+        ConversationRateLimitMiddleware,
+        per_minute=settings.conv_rate_limit_per_minute,
+    )
+    app.add_middleware(
+        APIKeyMiddleware,
+        api_key=settings.augur_api_key,
     )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
