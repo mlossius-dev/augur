@@ -140,6 +140,63 @@ These are documented in `docs/augur-roadmap.md` "Failure modes to watch for." Th
 
 ---
 
+## Completed phases and their key components
+
+### Phase 8 — Presentation layer (dimensions, changes, reasoning)
+
+- **`src/augur/presentation/dimensions.py`** — `compute_dimension_scores()` aggregates condition/edge counts per dimension into a `DimensionScore` with a `state` band (nominal/elevated/critical).
+- **`src/augur/presentation/changes.py`** — `get_recent_changes()` pulls the most significant graph updates in a time window.
+- **`src/augur/presentation/reasoning.py`** — `build_reasoning_chain()` traces the causal path between two nodes.
+- **`src/augur/api/home.py`** — `GET /api/home` returns dimension scores + recent changes in one call.
+- **`src/augur/api/reasoning.py`** — `GET /api/reasoning?from_node=&to_node=` returns the causal chain.
+- **`static/js/home.js`**, **`static/js/reasoning.js`** — client-side rendering for the home view and reasoning drill-down.
+- **`static/css/augur.css`** — stylesheet for all views.
+
+### Phase 9 — Topics and geographic scoping
+
+- **`src/augur/db/migrations/005_topics.sql`** — `topics`, `topic_nodes`, `region_scope_definitions` tables; 8 seeded regions.
+- **`src/augur/presentation/topics.py`** — `get_topic_list()`, `get_topic_detail()`, `create_topic()`, `assign_nodes_to_topic()`. Topic state is derived from the active/total condition ratio, not stored explicitly.
+- **`src/augur/presentation/geo.py`** — `infer_region(lat, lon, region_definitions)` picks the smallest bounding box that contains the point (area-sorted candidates list). `get_regional_scope()` filters dimension scores and changes for the inferred region.
+- **`src/augur/api/topics.py`** — `GET /api/topics`, `GET /api/topics/{topic_id}`.
+- **`src/augur/api/geo.py`** — `GET /api/geo/scope?lat=&lon=&as_of=`.
+- **`src/augur/cli/operator.py`** — `augur topics create/list/assign/nodes` subcommands.
+- **`static/js/topic.js`** — topic list and detail rendering; `loadGeoScope()`.
+
+### Phase 10 — Scenario projection
+
+- **`src/augur/db/migrations/006_scenarios.sql`** — `scenarios` table with `probability_band CHECK` constraint.
+- **`src/augur/projection/`** package:
+  - `models.py` — `ProbabilityBand(StrEnum)`: HIGH/MODERATE/LOW/NEGLIGIBLE; `Scenario`, `GraphEvidence`, `ProjectionResult`.
+  - `evidence.py` — `gather_evidence()` pulls capped graph evidence (conditions, edges, changes) filtered by dimension keywords.
+  - `prompts.py` — system prompt + `build_user_message()` formats evidence for the LLM.
+  - `parser.py` — `parse_scenarios()` strips markdown fences, validates JSON, defaults unknown probability bands, skips malformed items.
+  - `store.py` — `save_scenarios()` with optional previous-deprecation; `get_scenarios()`.
+  - `orchestrator.py` — `ProjectionOrchestrator.run_projection()` / `run_all_dimensions()`; uses `PipelineStage.PROJECTION`.
+- **`src/augur/api/scenarios.py`** — `GET /api/scenarios?dimension=&as_of=&limit=`, `GET /api/scenarios/{scenario_id}`.
+- **`src/augur/scheduler.py`** — Sunday 06:00 UTC `scenario_projection` CronTrigger job.
+- **`static/js/scenarios.js`** — `loadScenarios()`, `renderScenarioCard()`.
+
+### Phase 11 — Conversation layer
+
+- **`src/augur/db/migrations/007_conversation.sql`** — `conversation_sessions` and `conversation_messages` tables; `prune_old_sessions()` PL/pgSQL function.
+- **`src/augur/conversation/`** package:
+  - `context.py` — `retrieve_context()` uses pg_trgm `similarity()` (threshold 0.1) to match nodes; pulls connected edges, recent signals (ILIKE on node name terms), dimension summaries. No vector embeddings — deliberately simple.
+  - `prompts.py` — `build_messages()` injects context first, then interleaves session history (last 6 turns), then the current question.
+  - `session.py` — `create_session()`, `touch_session()`, `get_session_history()`, `save_message()`, `prune_sessions()`.
+  - `orchestrator.py` — `ConversationOrchestrator.ask()` wires retrieval → history → LLM → persistence; uses `PipelineStage.CONVERSATION` (free-tier Gemini Flash key).
+- **`src/augur/api/conversation.py`** — `POST /api/conversation/query`, `GET /api/conversation/{session_id}`.
+- **`src/augur/scheduler.py`** — Sunday 07:00 UTC `prune_sessions` CronTrigger job.
+- **`static/js/conversation.js`** — `submitQuestion()`, `appendMessage()`, `clearConversation()`; multi-turn session state held client-side.
+
+### Phase 12 — Production hardening
+
+- **`src/augur/middleware/auth.py`** — `APIKeyMiddleware`: gates all `/api/*` paths behind `X-API-Key` header when `AUGUR_API_KEY` env var is set. Open-access dev mode when the var is unset.
+- **`src/augur/middleware/ratelimit.py`** — `ConversationRateLimitMiddleware`: sliding-window (deque of timestamps per IP) rate limiter applied only to `POST /api/conversation/query`. Returns 429 with `Retry-After` header when the IP exceeds `CONV_RATE_LIMIT_PER_MINUTE` (default 10) requests per 60 s. IP extracted from `X-Forwarded-For` (first entry) or `request.client.host`.
+- **`src/augur/config.py`** — Added `augur_api_key: str | None = None` and `conv_rate_limit_per_minute: int = 10` to `Settings`.
+- **`src/augur/main.py`** — Both middleware wired into `create_app()`; rate limiter added before auth so the IP bucket is checked first (Starlette middleware stack is LIFO, so add rate limiter first to have it execute first).
+
+---
+
 ## Tools, infrastructure, and access
 
 - **Docker Compose** orchestrates the local and VPS environments.
