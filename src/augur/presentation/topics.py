@@ -45,6 +45,7 @@ class TopicSummary:
     state: str  # derived from active conditions
     created_at: str
     updated_at: str
+    attention: str = "low"  # priority proxy: high | medium | low (severity-first)
 
 
 @dataclass
@@ -82,6 +83,7 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
             state=_derive_topic_state(row["active_count"], row["node_count"]),
             created_at=row["created_at"].isoformat(),
             updated_at=row["updated_at"].isoformat(),
+            attention=_derive_attention(row["active_count"], row["node_count"]),
         )
         for row in rows
     ]
@@ -144,6 +146,7 @@ async def get_topic_detail(
         state=_derive_topic_state(active, total),
         created_at=topic_row["created_at"].isoformat(),
         updated_at=topic_row["updated_at"].isoformat(),
+        attention=_derive_attention(active, total),
         nodes=node_summaries,
     )
 
@@ -237,3 +240,20 @@ async def list_topics_for_node(pool: asyncpg.Pool, node_id: str) -> list[dict[st
 def _derive_topic_state(active: int, total: int) -> str:
     band = _compute_state_band(active, total)
     return str(band)
+
+
+# Attention is a severity-first priority proxy over the same state band the
+# topic already reports: a topic in a worse band warrants closer attention.
+_ATTENTION_BY_BAND = {
+    "crisis": "high",
+    "deteriorating": "high",
+    "strained": "medium",
+    "stable": "low",
+    "improving": "low",
+    "unknown": "low",
+}
+
+
+def _derive_attention(active: int, total: int) -> str:
+    """Map the topic's state band to a high/medium/low attention tier."""
+    return _ATTENTION_BY_BAND.get(_derive_topic_state(active, total), "low")

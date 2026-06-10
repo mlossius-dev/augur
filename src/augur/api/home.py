@@ -43,6 +43,11 @@ def _serialise_dimension(d: DimensionScore) -> dict[str, Any]:
         "active_conditions": d.active_conditions,
         "total_conditions": d.total_conditions,
         "strong_edge_count": d.strong_edge_count,
+        "weak_edge_count": d.weak_edge_count,
+        "rate": d.rate,
+        "rate_label": d.rate_label,
+        "acceleration": d.acceleration,
+        "accel_label": d.accel_label,
         "sparkline": [
             {
                 "week_start": sp.week_start,
@@ -67,6 +72,8 @@ def _serialise_change(c: ChangeRecord) -> dict[str, Any]:
         "target_name": c.target_name,
         "weight_before": c.weight_before,
         "weight_after": c.weight_after,
+        "impact_rank": c.impact_rank,
+        "downstream_edge_count": c.downstream_edge_count,
     }
 
 

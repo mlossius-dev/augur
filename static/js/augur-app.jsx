@@ -68,15 +68,21 @@ function adaptDim(d) {
   const meta = DIM_META[d.dimension] || { short: (d.dimension||"?").slice(0,4).toUpperCase(), latin: "" };
   const series = (d.sparkline || []).map(p => p.total_count > 0 ? p.active_count / p.total_count : 0);
   return {
-    key:    d.dimension,
-    name:   d.label,
-    short:  meta.short,
-    latin:  meta.latin,
-    state:  st,
-    dir:    dirGlyph(d.direction),
+    key:       d.dimension,
+    name:      d.label,
+    short:     meta.short,
+    latin:     meta.latin,
+    state:     st,
+    dir:       dirGlyph(d.direction),
     series,
-    active: d.active_conditions,
-    total:  d.total_conditions,
+    active:    d.active_conditions,
+    total:     d.total_conditions,
+    rate:      d.rate ?? 0,
+    rateLabel: d.rate_label || "",
+    accel:     d.acceleration ?? 0,
+    accelLabel:d.accel_label || "",
+    strong:    d.strong_edge_count ?? 0,
+    weak:      d.weak_edge_count ?? 0,
   };
 }
 
@@ -93,7 +99,26 @@ function adaptChange(c) {
     weightBefore: c.weight_before,
     weightAfter:  c.weight_after,
     occurredAt:   c.occurred_at,
+    downstream:   c.downstream_edge_count ?? 0,
+    impactRank:   c.impact_rank ?? null,
   };
+}
+
+// Confidence regime — derived from the same payload the user sees:
+//   level   = share of strong/moderate edges across the five dimensions
+//   spread  = whether the dimension directions diverge (improving AND worsening)
+// A heuristic read of corroborating structure, not a probability.
+function confidenceRegime(dims) {
+  if (!dims || !dims.length) return null;
+  const strong = dims.reduce((a, d) => a + (d.strong || 0), 0);
+  const weak   = dims.reduce((a, d) => a + (d.weak || 0), 0);
+  const denom  = strong + weak;
+  const share  = denom > 0 ? strong / denom : 0;
+  const level  = denom === 0 ? "unestablished" : share < 0.33 ? "low" : share < 0.66 ? "moderate" : "high";
+  const hasUp   = dims.some(d => d.dir === "↗");
+  const hasDown = dims.some(d => d.dir === "↘");
+  const spread  = hasUp && hasDown ? "widening" : "aligned";
+  return denom === 0 ? "unestablished" : `${level}, ${spread}`;
 }
 
 function compositeU(dims) {
@@ -288,6 +313,11 @@ function DomainCard({ dim, changes, selected, onClick }) {
             {st.label}
           </span>
           <span style={{ fontFamily:mono, fontSize:13, color:st.ring }}>{dim.dir}</span>
+          {dim.rateLabel && (
+            <span style={{ fontFamily:display, fontStyle:"italic", fontSize:13, color:P.ink3 }}>
+              {dim.rateLabel}
+            </span>
+          )}
         </div>
 
         <div style={{ marginTop:8, borderTop:`1px solid ${P.ruleSoft}`, paddingTop:6 }}>
@@ -355,7 +385,8 @@ function DomainLedger({ dim, changes, onClose }) {
         </div>
         <div style={{ marginTop:14, fontFamily:mono, fontSize:10, color:P.ink3, lineHeight:1.7, letterSpacing:".04em" }}>
           state · {st.label}<br/>
-          trend · {dim.dir}<br/>
+          rate · {dim.rateLabel || "—"}{dim.rate ? ` (${dim.rate > 0 ? "+" : ""}${dim.rate}/wk)` : ""}<br/>
+          accel · {dim.accelLabel || "—"}<br/>
           series · ~{dim.series.length} wk weekly active/total ratio
         </div>
         <div style={{ marginTop:16 }}>
@@ -395,14 +426,19 @@ function DomainLedger({ dim, changes, onClose }) {
                           fontFamily:mono, fontSize:9.5, color:P.ink3, marginBottom:3, letterSpacing:".04em" }}>
               <span>{fmtRelTime(c.occurredAt)}</span>
               <span style={{ color:st.ring }}>
-                {c.weightBefore!=null && c.weightAfter!=null
-                  ? `${c.weightBefore.toFixed(2)} → ${c.weightAfter.toFixed(2)}`
+                {c.weightBefore && c.weightAfter
+                  ? `${c.weightBefore} → ${c.weightAfter}`
                   : (c.type||"").replace(/_/g," ")}
               </span>
             </div>
             <div style={{ fontFamily:serif, fontSize:13, lineHeight:1.4, color:P.natt }}>
               {c.summary}
             </div>
+            {c.downstream > 0 && (
+              <div style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginTop:3, letterSpacing:".04em" }}>
+                {c.downstream} edge{c.downstream===1?"":"s"} downstream
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -445,6 +481,12 @@ function CausalThreads({ topics, changes, onTopicClick }) {
               </div>
               <div style={{ fontFamily:display, fontStyle:"italic", fontSize:17.5, color:P.natt, lineHeight:1.15 }}>
                 {t.name}
+                {t.attention === "high" && (
+                  <span title="high attention" style={{ color:P.leirstein, marginLeft:8, fontSize:13 }}>●</span>
+                )}
+                {t.attention === "medium" && (
+                  <span title="medium attention" style={{ color:P.sandDeep, marginLeft:8, fontSize:13 }}>●</span>
+                )}
               </div>
               <div style={{ fontFamily:serif, fontSize:13, lineHeight:1.4, color: latest ? P.ink2 : P.ink4 }}>
                 {latest ? (
@@ -646,7 +688,7 @@ function LiveHeader({ statusData }) {
             <div style={{ display:"flex", alignItems:"baseline", gap:14,
                           padding:"8px 18px", flex:1, borderRight:`1px solid ${P.rule}` }}>
               <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".18em", color:P.ink3 }}>SIGNALS</span>
-              {[["1H", statusData.signals.last_1h], ["24H", statusData.signals.last_24h]].map(([w,v]) => (
+              {[["1H", statusData.signals.last_1h], ["4H", statusData.signals.last_4h], ["24H", statusData.signals.last_24h]].map(([w,v]) => (
                 <span key={w} style={{ fontFamily:mono, fontSize:10.5, color:P.natt,
                                         fontVariantNumeric:"tabular-nums", whiteSpace:"nowrap" }}>
                   <span style={{ fontSize:8, color:P.ink4, letterSpacing:".1em", marginRight:5 }}>{w}</span>
@@ -657,19 +699,32 @@ function LiveHeader({ statusData }) {
             <div style={{ display:"flex", alignItems:"baseline", gap:14,
                           padding:"8px 18px", flex:1, borderRight:`1px solid ${P.rule}` }}>
               <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".18em", color:P.ink3 }}>PAYLOADS</span>
-              <span style={{ fontFamily:mono, fontSize:10.5, color:P.natt, fontVariantNumeric:"tabular-nums" }}>
-                <span style={{ fontSize:8, color:P.ink4, letterSpacing:".1em", marginRight:5 }}>24H</span>
-                {fmtN(statusData.payloads.last_24h)}
-              </span>
+              {[["4H", statusData.payloads.last_4h], ["24H", statusData.payloads.last_24h]].map(([w,v]) => (
+                <span key={w} style={{ fontFamily:mono, fontSize:10.5, color:P.natt,
+                                        fontVariantNumeric:"tabular-nums", whiteSpace:"nowrap" }}>
+                  <span style={{ fontSize:8, color:P.ink4, letterSpacing:".1em", marginRight:5 }}>{w}</span>
+                  {fmtN(v)}
+                </span>
+              ))}
             </div>
-            <div style={{ display:"flex", alignItems:"baseline", gap:14, padding:"8px 18px" }}>
+            <div style={{ display:"flex", alignItems:"baseline", gap:14, padding:"8px 18px",
+                          borderRight:`1px solid ${P.rule}` }}>
               <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".18em", color:P.ink3 }}>NODES</span>
               <span style={{ fontFamily:mono, fontSize:10.5, color:P.natt, fontVariantNumeric:"tabular-nums" }}>
                 {fmtN(statusData.graph.live_nodes)}
+                {statusData.graph.nodes_24h > 0 &&
+                  <span style={{ color:P.mose, marginLeft:4 }}>+{fmtN(statusData.graph.nodes_24h)}</span>}
               </span>
               <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".18em", color:P.ink3, marginLeft:6 }}>EDGES</span>
               <span style={{ fontFamily:mono, fontSize:10.5, color:P.natt, fontVariantNumeric:"tabular-nums" }}>
                 {fmtN(statusData.graph.live_edges)}
+                {statusData.graph.edges_24h > 0 &&
+                  <span style={{ color:P.mose, marginLeft:4 }}>+{fmtN(statusData.graph.edges_24h)}</span>}
+              </span>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", marginLeft:"auto", paddingLeft:18 }}>
+              <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".12em", color:P.ink4 }}>
+                {statusData.sources ? `${fmtN(statusData.sources.enabled)} SOURCES` : ""}
               </span>
             </div>
           </>
@@ -1363,7 +1418,7 @@ function App() {
                   </div>
                   <div style={{ marginTop:12, fontFamily:mono, fontSize:9.5, color:P.ink4,
                                 letterSpacing:".06em", lineHeight:1.7 }}>
-                    confidence · derived from graph state
+                    confidence · {confidenceRegime(dims) || "unestablished"}
                   </div>
                 </>
               )}

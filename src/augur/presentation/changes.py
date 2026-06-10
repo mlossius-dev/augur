@@ -45,6 +45,7 @@ class ChangeRecord:
     weight_before: str | None   # For edge changes: previous weight band
     weight_after: str | None    # For edge changes: new weight band
     impact_rank: int            # Lower = more impactful (for sorting)
+    downstream_edge_count: int = 0  # 1-hop live edges incident to the affected node(s)
 
 
 # Impact weights for sorting
@@ -211,7 +212,71 @@ async def get_recent_changes(
 
     # Sort by impact rank, then recency
     unique.sort(key=lambda c: (c.impact_rank, c.occurred_at), reverse=False)
-    return unique[:limit]
+    result = unique[:limit]
+
+    await _attach_downstream_counts(pool, result)
+    return result
+
+
+async def _attach_downstream_counts(
+    pool: asyncpg.Pool,
+    changes: list[ChangeRecord],
+) -> None:
+    """
+    Populate ``downstream_edge_count`` on each change: the number of live edges
+    in the immediate (1-hop) neighbourhood of the affected target.
+
+    For a node target that is its edge degree. For an edge target it is the
+    count of other live edges sharing either endpoint — the edge's local blast
+    radius. Two batched queries over the (small) final change set; no traversal.
+    """
+    if not changes:
+        return
+
+    node_ids = [c.target_id for c in changes if c.target_type == "node"]
+    edge_ids = [c.target_id for c in changes if c.target_type == "edge"]
+
+    node_counts: dict[str, int] = {}
+    edge_counts: dict[str, int] = {}
+
+    async with pool.acquire() as conn:
+        if node_ids:
+            rows = await conn.fetch(
+                """
+                SELECT nid::text AS nid, COUNT(*) AS cnt FROM (
+                    SELECT source_node_id AS nid FROM edges WHERE NOT deprecated
+                    UNION ALL
+                    SELECT target_node_id AS nid FROM edges WHERE NOT deprecated
+                ) x
+                WHERE nid = ANY($1::uuid[])
+                GROUP BY nid
+                """,
+                node_ids,
+            )
+            node_counts = {r["nid"]: int(r["cnt"]) for r in rows}
+
+        if edge_ids:
+            rows = await conn.fetch(
+                """
+                SELECT e.edge_id::text AS eid,
+                       (SELECT COUNT(*) FROM edges x
+                        WHERE NOT x.deprecated
+                          AND x.edge_id <> e.edge_id
+                          AND (x.source_node_id IN (e.source_node_id, e.target_node_id)
+                               OR x.target_node_id IN (e.source_node_id, e.target_node_id))
+                       ) AS cnt
+                FROM edges e
+                WHERE e.edge_id = ANY($1::uuid[])
+                """,
+                edge_ids,
+            )
+            edge_counts = {r["eid"]: int(r["cnt"]) for r in rows}
+
+    for c in changes:
+        if c.target_type == "node":
+            c.downstream_edge_count = node_counts.get(c.target_id, 0)
+        else:
+            c.downstream_edge_count = edge_counts.get(c.target_id, 0)
 
 
 def _infer_dimension(text: str) -> str:

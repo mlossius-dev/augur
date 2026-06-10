@@ -161,33 +161,44 @@ The single backend change in this plan. It surfaces the live-system strip honest
 
 ## Backlog
 
-### §A — Deferred small gaps (data exists; not in this scope)
+### §0 — Done (the "easy" metrics: derivable from data we already store)
+
+Shipped after the frontend. Each is pure computation over existing columns — no
+new ingest source, no curation pipeline. Definitions recorded here because they
+are presentation decisions, not just code.
+
+| Metric | How it's derived now | Where it surfaces |
+|---|---|---|
+| **Rate / acceleration** | Least-squares **slope** of the weekly active-share series (last 6 valid weeks) = `rate`; recent-half slope minus prior-half slope = `acceleration`. Polarity folded into the label (rising share = worsening). Guard: <3 valid weeks → "insufficient data". `dimensions._compute_velocity`. | Domain card (rate label by the direction glyph) · ledger (`rate · … / accel · …`) |
+| **Confidence regime** | `level` = strong/(strong+weak) edge share across the five dimensions (`<0.33` low · `<0.66` moderate · else high); `spread` = "widening" if directions hold both ↗ and ↘, else "aligned". Heuristic, not a probability. Client-side from the existing payload. | Hero overview line (`confidence · …`) |
+| **Real source count** | `len(get_enabled_sources())` from the registry (≈29). `/api/status` → `sources`. | Live header strip (`N SOURCES`) |
+| **Topic attention rank** | Severity-first: state band → high (crisis/deteriorating) · medium (strained) · low. `topics._derive_attention`. | Causal-thread priority dot |
+| **Live stats 4h + node/edge deltas** | `FILTER` over existing `fetched_at` (signals/payloads 4h) and `created_at` (nodes/edges created in 24h) in `get_pipeline_health()`. | Live header strip (1H/4H/24H + `+Δ24h`) |
+| **Downstream edge count** | 1-hop live edges incident to the change's target node (or either endpoint, for edge targets). Two batched queries, no traversal. `changes._attach_downstream_counts`. | Ledger change rows (`N edges downstream`) |
+| **`impact_rank` exposure** | Already computed in `changes.py`; now serialized on `/api/home` + `/api/geo/scope`. | Available to the frontend for impact ordering |
+| **Latin binomials** | Static decorative labels in the frontend `DIM_META`. | Card + ledger subtitles |
+
+### §A — Deferred small gaps (data exists; not yet built)
 
 These degrade gracefully in the frontend until built:
 
-1. **Expose `impact_rank`** on `/api/home` changes → enables the 5-segment impact bar. (~1 line in `_serialise_change`.)
-2. **Per-topic edge count** in `get_topic_list` / `get_topic_detail` → enables "N nodes · M edges".
-3. **Change→topic tagging** (join `changes[].target_id` to `topic_nodes`) → enables the Home v2 "causal threads" merge.
+1. **Per-topic edge count** in `get_topic_list` / `get_topic_detail` → enables "N nodes · M edges" (currently "N nodes" only).
+2. **Change→topic tagging** (join `changes[].target_id` to `topic_nodes`) → replaces the frontend's keyword heuristic for the "causal threads" merge.
 
-### §B — Make fabricated content real (operator chose this; **each needs its own plan, after the frontend**)
+### §B — Make fabricated content real — the **hard** items (each needs new data / curation; own plan first)
 
-**Reminder owed:** once the frontend is complete, bring this list back to the operator and draft a proper plan per item. Some require a **documents-first** conversation before any code (per `AGENTS.md`).
+These need a **new external source, an LLM/curation pipeline, or finer geo data** — not derivable from what we store today. Some require a **documents-first** conversation before any code (per `AGENTS.md`).
 
-| Fabricated element | Sketch of what "real" would require | Flags |
+| Fabricated element | Why it's hard / what "real" requires | Flags |
 |---|---|---|
-| Live stats 4h window + node/edge deltas | Track windowed counts (4h bucket; node/edge creation deltas) in `get_pipeline_health()` | Small; extends the in-scope endpoint |
-| Rate / acceleration labels | Compute 1st/2nd derivative of the dimension sparkline; add fields to `/api/home` | Needs a defined method |
 | Per-dimension editorial note | LLM-generated or operator-curated note per dimension; new store/field | Cost + curation question |
 | Change meta deltas (market quotes) | A market-data source/feed feeding change records | New source — `augur-sources.md` revision |
-| "23 edges" downstream impact | Compute affected-neighborhood size per change | Moderate graph query |
-| Topic "weight" / attention rank | Define an attention metric over topic state/activity | Needs a definition |
 | City-precise "your latitude" | Client geocoder, or finer `region_scope_definitions` | Geolocation precision question |
 | Hyper-local change items | Sub-regional graph coverage (likely out of reach near-term) | Data-availability question |
-| Scrubber event markers | A "notable events" table/endpoint | Small, self-contained |
-| "14,402 sources nominal" | Real enabled-source count via `source_registry` | Trivial; real number ≈ 28 |
-| Latin binomials | Static decorative labels (no data needed) | Cosmetic |
+| Scrubber event markers | A "notable events" table/endpoint + curation | Self-contained but needs new storage |
 | Operator id / subscription / edition / build / hash | **Conflicts with `augur-presentation.md` line 106** and single-operator design | **Documents-first required** before building |
-| Confidence regime label | Derive from spread of dimension directions | Needs a definition |
+
+**Note on derived metrics:** rate/acceleration, confidence, and topic attention use **starting-point thresholds** (e.g. share-points/week bands, the 0.33/0.66 confidence cuts). They should be tuned once real signal volume exists; the methods live in the modules cited in §0.
 
 ---
 

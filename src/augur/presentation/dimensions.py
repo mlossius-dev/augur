@@ -120,6 +120,10 @@ class DimensionScore:
     strong_edge_count: int
     weak_edge_count: int
     sparkline: list[SparkPoint] = field(default_factory=list)
+    rate: float = 0.0              # 1st derivative of the active-share sparkline (share/wk)
+    rate_label: str = "unknown"    # human label, e.g. "moderate rising"
+    acceleration: float = 0.0      # change in slope between window halves (share/wk²)
+    accel_label: str = "unknown"   # "accelerating" | "decelerating" | "linear"
     notes: str = ""
 
 
@@ -277,6 +281,8 @@ async def compute_dimension_scores(
             for wk in spark_weeks
         ]
 
+        rate, rate_label, accel, accel_label = _compute_velocity(sparkline)
+
         scores.append(DimensionScore(
             dimension=dim,
             label=DIMENSION_LABELS[dim],
@@ -287,9 +293,74 @@ async def compute_dimension_scores(
             strong_edge_count=strong,
             weak_edge_count=weak,
             sparkline=sparkline,
+            rate=rate,
+            rate_label=rate_label,
+            acceleration=accel,
+            accel_label=accel_label,
         ))
 
     return scores
+
+
+def _linfit_slope(ys: list[float]) -> float:
+    """Least-squares slope of ys against its index (0..n-1)."""
+    n = len(ys)
+    if n < 2:
+        return 0.0
+    mean_x = (n - 1) / 2
+    mean_y = sum(ys) / n
+    denom = sum((i - mean_x) ** 2 for i in range(n))
+    if denom == 0:
+        return 0.0
+    num = sum((i - mean_x) * (ys[i] - mean_y) for i in range(n))
+    return num / denom
+
+
+def _compute_velocity(sparkline: list[SparkPoint]) -> tuple[float, str, float, str]:
+    """
+    Derive rate (1st derivative) and acceleration (2nd derivative) from the
+    weekly active-share series the user actually sees on the sparkline.
+
+    Rate is the least-squares slope over the last six valid weeks, in units of
+    active-share per week. A *rising* share means more conditions active = more
+    stress = worsening, so the polarity is folded into the label.
+
+    Acceleration compares the slope of the recent half of the window against the
+    prior half: a steepening trend (|slope| growing) reads as "accelerating".
+
+    The sparkline is sparse (only weeks with state changes carry data), so we
+    guard on a minimum of three valid points and return honest "insufficient
+    data" otherwise.
+    """
+    ratios = [sp.active_count / sp.total_count for sp in sparkline if sp.total_count > 0]
+    if len(ratios) < 3:
+        return 0.0, "insufficient data", 0.0, "—"
+
+    window = ratios[-6:]
+    rate = _linfit_slope(window)
+
+    mag = abs(rate)
+    if mag < 0.005:
+        rate_label = "steady"
+    else:
+        size = "gentle" if mag < 0.02 else "moderate" if mag < 0.05 else "steep"
+        rate_label = f"{size} {'rising' if rate > 0 else 'easing'}"
+
+    if len(window) >= 4:
+        half = len(window) // 2
+        slope_prior = _linfit_slope(window[:len(window) - half])
+        slope_recent = _linfit_slope(window[half:])
+        accel = slope_recent - slope_prior
+        steepening = abs(slope_recent) - abs(slope_prior)
+        if abs(steepening) < 0.005:
+            accel_label = "linear"
+        else:
+            accel_label = "accelerating" if steepening > 0 else "decelerating"
+    else:
+        accel = 0.0
+        accel_label = "—"
+
+    return round(rate, 4), rate_label, round(accel, 4), accel_label
 
 
 def _compute_state_band(active: int, total: int) -> StateBand:
