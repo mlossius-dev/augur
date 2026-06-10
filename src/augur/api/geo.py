@@ -97,6 +97,7 @@ async def geo_scope(
                 "weight_after": c.weight_after,
                 "impact_rank": c.impact_rank,
                 "downstream_edge_count": c.downstream_edge_count,
+                "topic_ids": c.topic_ids,
             }
             for c in scope.changes
         ],

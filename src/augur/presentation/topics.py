@@ -46,6 +46,7 @@ class TopicSummary:
     created_at: str
     updated_at: str
     attention: str = "low"  # priority proxy: high | medium | low (severity-first)
+    edge_count: int = 0      # live edges internal to the topic subgraph (both endpoints in topic)
 
 
 @dataclass
@@ -72,6 +73,21 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
             """
         )
 
+        # Internal edge counts: live edges with BOTH endpoints in the same topic.
+        edge_rows = await conn.fetch(
+            """
+            SELECT tn_s.topic_id, COUNT(DISTINCT e.edge_id) AS edge_count
+            FROM edges e
+            JOIN topic_nodes tn_s ON tn_s.node_id = e.source_node_id
+            JOIN topic_nodes tn_t ON tn_t.node_id = e.target_node_id
+                                  AND tn_t.topic_id = tn_s.topic_id
+            WHERE NOT e.deprecated
+            GROUP BY tn_s.topic_id
+            """
+        )
+
+    edge_counts = {str(r["topic_id"]): int(r["edge_count"]) for r in edge_rows}
+
     return [
         TopicSummary(
             topic_id=str(row["topic_id"]),
@@ -84,6 +100,7 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
             created_at=row["created_at"].isoformat(),
             updated_at=row["updated_at"].isoformat(),
             attention=_derive_attention(row["active_count"], row["node_count"]),
+            edge_count=edge_counts.get(str(row["topic_id"]), 0),
         )
         for row in rows
     ]
@@ -121,6 +138,22 @@ async def get_topic_detail(
             cutoff,
         )
 
+        # Internal subgraph edges: both endpoints among this topic's nodes.
+        node_ids = [r["node_id"] for r in node_rows]
+        edge_count = 0
+        if node_ids:
+            edge_count = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM edges e
+                WHERE NOT e.deprecated
+                  AND e.created_at <= $2
+                  AND e.source_node_id = ANY($1::uuid[])
+                  AND e.target_node_id = ANY($1::uuid[])
+                """,
+                node_ids,
+                cutoff,
+            )
+
     node_summaries = [
         TopicNodeSummary(
             node_id=str(r["node_id"]),
@@ -147,6 +180,7 @@ async def get_topic_detail(
         created_at=topic_row["created_at"].isoformat(),
         updated_at=topic_row["updated_at"].isoformat(),
         attention=_derive_attention(active, total),
+        edge_count=edge_count,
         nodes=node_summaries,
     )
 

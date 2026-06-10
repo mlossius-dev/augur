@@ -177,13 +177,12 @@ are presentation decisions, not just code.
 | **Downstream edge count** | 1-hop live edges incident to the change's target node (or either endpoint, for edge targets). Two batched queries, no traversal. `changes._attach_downstream_counts`. | Ledger change rows (`N edges downstream`) |
 | **`impact_rank` exposure** | Already computed in `changes.py`; now serialized on `/api/home` + `/api/geo/scope`. | Available to the frontend for impact ordering |
 | **Latin binomials** | Static decorative labels in the frontend `DIM_META`. | Card + ledger subtitles |
+| **Per-topic edge count** | Live edges with **both** endpoints in the topic's node set (internal subgraph). `topics.get_topic_list` (batched) + `get_topic_detail` (as_of-aware). | Causal-thread row (`N · M`) · topic list & detail (`N nodes · M edges`) |
+| **Change→topic tagging** | Real membership, not keywords: a change links to a topic when its target node — or, for an edge target, either endpoint — is in that topic. `changes._attach_topic_membership` → `topic_ids[]`. | Causal threads merge the 24h change log under each topic |
 
-### §A — Deferred small gaps (data exists; not yet built)
+### §A — Deferred small gaps — **cleared**
 
-These degrade gracefully in the frontend until built:
-
-1. **Per-topic edge count** in `get_topic_list` / `get_topic_detail` → enables "N nodes · M edges" (currently "N nodes" only).
-2. **Change→topic tagging** (join `changes[].target_id` to `topic_nodes`) → replaces the frontend's keyword heuristic for the "causal threads" merge.
+Both former gaps (per-topic edge count, change→topic tagging) are now built — see §0. The frontend's keyword-matching stopgap for the causal-thread merge has been removed in favour of real `topic_ids` membership.
 
 ### §B — Make fabricated content real — the **hard** items (each needs new data / curation; own plan first)
 

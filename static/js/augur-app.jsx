@@ -101,6 +101,7 @@ function adaptChange(c) {
     occurredAt:   c.occurred_at,
     downstream:   c.downstream_edge_count ?? 0,
     impactRank:   c.impact_rank ?? null,
+    topicIds:     c.topic_ids || [],
   };
 }
 
@@ -463,10 +464,9 @@ function CausalThreads({ topics, changes, onTopicClick }) {
     <div>
       {topics.map((t, i) => {
         const isOpen = open === i;
-        const words = (t.name || "").toLowerCase().split(/\s+/).filter(w => w.length > 3);
-        const linked = changes.filter(c =>
-          words.some(w => (c.summary||"").toLowerCase().includes(w))
-        );
+        // Real membership: a change links to this topic when its target node
+        // (or an edge endpoint) sits in the topic's subgraph.
+        const linked = changes.filter(c => (c.topicIds || []).includes(t.topic_id));
         const latest = linked[0];
 
         return (
@@ -498,8 +498,9 @@ function CausalThreads({ topics, changes, onTopicClick }) {
                   <span style={{ fontStyle:"italic" }}>No new changes this window.</span>
                 )}
               </div>
-              <div style={{ fontFamily:mono, fontSize:10, color:P.ink3, textAlign:"right", letterSpacing:".04em" }}>
-                {t.node_count} nodes
+              <div title={`${t.node_count} nodes · ${t.edge_count} edges`}
+                   style={{ fontFamily:mono, fontSize:10, color:P.ink3, textAlign:"right", letterSpacing:".04em" }}>
+                {t.node_count} · {t.edge_count}
               </div>
               <div style={{ fontFamily:mono, fontSize:12, color:P.leirstein, textAlign:"right" }}>
                 {isOpen ? "↑" : "→"}
@@ -956,7 +957,7 @@ function TopicListView({ onBack, onTopicSelect, asOf }) {
             </div>
           )}
           <div style={{ fontFamily:mono, fontSize:9.5, color:P.ink3, marginTop:4 }}>
-            {t.node_count} nodes · {t.active_condition_count} conditions active
+            {t.node_count} nodes · {t.edge_count} edges · {t.active_condition_count} conditions active
           </div>
           {t.description && (
             <div style={{ fontFamily:serif, fontSize:13, color:P.ink2, marginTop:6, lineHeight:1.4 }}>
@@ -1040,7 +1041,7 @@ function TopicDetailView({ topicId, onBack, onNodeSelect, onEdgeSelect, asOf }) 
             {stateTitle(data.state)}
           </div>
           <div style={{ fontFamily:mono, fontSize:9.5, color:P.ink3 }}>
-            {data.node_count} nodes · {data.active_condition_count} conditions active
+            {data.node_count} nodes · {data.edge_count} edges · {data.active_condition_count} conditions active
           </div>
         </div>
         {data.description && (

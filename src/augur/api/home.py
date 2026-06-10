@@ -74,6 +74,7 @@ def _serialise_change(c: ChangeRecord) -> dict[str, Any]:
         "weight_after": c.weight_after,
         "impact_rank": c.impact_rank,
         "downstream_edge_count": c.downstream_edge_count,
+        "topic_ids": c.topic_ids,
     }
 
 
