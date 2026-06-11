@@ -184,19 +184,18 @@ are presentation decisions, not just code.
 
 Both former gaps (per-topic edge count, change→topic tagging) are now built — see §0. The frontend's keyword-matching stopgap for the causal-thread merge has been removed in favour of real `topic_ids` membership.
 
-### §B — Make fabricated content real — the **hard** items (each needs new data / curation; own plan first)
+### §B — Hard items — operator decisions recorded (2026-06-11)
 
-These need a **new external source, an LLM/curation pipeline, or finer geo data** — not derivable from what we store today. Some require a **documents-first** conversation before any code (per `AGENTS.md`).
+The operator triaged the hard list. Directions chosen:
 
-| Fabricated element | Why it's hard / what "real" requires | Flags |
+| Item | Decision | Approach |
 |---|---|---|
-| Per-dimension editorial note | LLM-generated or operator-curated note per dimension; new store/field | Cost + curation question |
-| Change meta deltas (market quotes) | A market-data source/feed feeding change records | New source — `augur-sources.md` revision |
-| City-precise "your latitude" | Client geocoder, or finer `region_scope_definitions` | Geolocation precision question |
-| Hyper-local change items | Sub-regional graph coverage (likely out of reach near-term) | Data-availability question |
-| Operator id / subscription / edition / build / hash | **Conflicts with `augur-presentation.md` line 106** and single-operator design | **Documents-first required** before building |
-
-**Scrubber event markers — done.** The first hard item built: a `notable_events` table (migration `008`, seeded with real dated events — the design's fabricated "Hormuz tabling" omitted), a `GET /api/events` endpoint, and the almanac scrubber now positions each marker on the track by its real `occurred_at`. Operator-extensible by inserting rows.
+| **Market data** | **Build properly — the priority.** Curated macro set, not all data. | Extend the existing **free FRED** source (already integrated): keep oil & EUR; add broad-dollar (DTWEXBGS), yen (DEXJPUS), S&P 500 (SP500), VIX (VIXCLS); recommend **S&P 500 + VIX in place of a synthetic "top-10 exchanges" composite**; optionally 10Y (DGS10) + gold. Add a **deterministic %-delta step** so a clean market signal enters the graph instead of feeding bare numbers to prose lenses. **Documents-first:** update `augur-sources.md`. |
+| **Per-dimension editorial note** | **Do it — as a grounded news summary, not editorializing.** | LLM summary of the dimension's *real* 24h changes/signals via a **free OpenRouter model** (zero cost). Grounded → low hallucination. New optional per-dimension `note` field, cached. |
+| **Scrubber event markers** | **Done.** | `notable_events` table (migration `008`), `GET /api/events`, scrubber positions markers by real `occurred_at`. |
+| **City-precise "your latitude"** | **Browser geolocation (done), + IP fallback on reject.** | Primary = browser geolocation (asks the user; already shipped). On denial, resolve the request IP to coarse lat/lon → existing `/api/geo/scope`. One dependency to pick: a free IP-geo HTTP service vs a bundled GeoLite2 DB. |
+| **Hyper-local change items** | **Out of scope — replaced, design slot kept.** | The "Your Latitude" local-items slot stays but is filled by the **real region-scoped change list** (`/api/geo/scope` → continental-region-filtered changes; already implemented). No fabricated zip-code/utility specifics. |
+| **Operator chrome** (id/tier/edition/hash) | **Removed — out of scope.** | Already absent from the new frontend; conflicts with `augur-presentation.md` line 106. Not building. |
 
 **Note on derived metrics:** rate/acceleration, confidence, and topic attention use **starting-point thresholds** (e.g. share-points/week bands, the 0.33/0.66 confidence cuts). They should be tuned once real signal volume exists; the methods live in the modules cited in §0.
 
