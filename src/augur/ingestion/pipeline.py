@@ -159,6 +159,10 @@ class IngestionPipeline:
             if source_id == "fred":
                 client = FredClient()
                 return await client.fetch_source(source)
+            elif source_id == "yahoo_finance":
+                from augur.ingestion.api_clients.yahoo_finance import YahooFinanceClient
+                client = YahooFinanceClient()
+                return await client.fetch_source(source)
             elif source_id == "usgs_earthquakes":
                 client = UsgsClient()
                 return await client.fetch_source(source)

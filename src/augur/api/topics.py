@@ -45,8 +45,10 @@ async def list_topics(pool=Depends(_pool)):
                 "description": t.description,
                 "dimension": t.dimension,
                 "node_count": t.node_count,
+                "edge_count": t.edge_count,
                 "active_condition_count": t.active_condition_count,
                 "state": t.state,
+                "attention": t.attention,
                 "created_at": t.created_at,
                 "updated_at": t.updated_at,
             }
@@ -73,8 +75,10 @@ async def get_topic(
         "description": detail.description,
         "dimension": detail.dimension,
         "node_count": detail.node_count,
+        "edge_count": detail.edge_count,
         "active_condition_count": detail.active_condition_count,
         "state": detail.state,
+        "attention": detail.attention,
         "created_at": detail.created_at,
         "updated_at": detail.updated_at,
         "nodes": [

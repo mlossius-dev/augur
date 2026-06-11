@@ -13,6 +13,7 @@ from augur.extraction.lenses.disconfirmation import (
 )
 from augur.extraction.lenses.financial import FINANCIAL_LENS
 from augur.extraction.lenses.geopolitical import GEOPOLITICAL_LENS
+from augur.extraction.lenses.market import MARKET_LENS
 from augur.extraction.lenses.narrative_divergence import NARRATIVE_DIVERGENCE_LENS
 from augur.extraction.lenses.physical_world import PHYSICAL_WORLD_LENS
 from augur.extraction.lenses.regulatory import REGULATORY_LENS
@@ -23,6 +24,7 @@ ACTIVE_LENSES = [
     COMMODITIES_LENS,
     FINANCIAL_LENS,
     GEOPOLITICAL_LENS,
+    MARKET_LENS,
     PHYSICAL_WORLD_LENS,
     REGULATORY_LENS,
     NARRATIVE_DIVERGENCE_LENS,
@@ -33,6 +35,7 @@ __all__ = [
     "COMMODITIES_LENS",
     "FINANCIAL_LENS",
     "GEOPOLITICAL_LENS",
+    "MARKET_LENS",
     "PHYSICAL_WORLD_LENS",
     "REGULATORY_LENS",
     "NARRATIVE_DIVERGENCE_LENS",

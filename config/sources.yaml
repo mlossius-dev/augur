@@ -42,12 +42,63 @@ sources:
         - PNGASEUUSDM         # European natural gas price
         - DEXUSEU             # USD/EUR exchange rate
         - DEXCHUS             # CNY/USD exchange rate
-      batch_size: 10
+        # ── Macro corroboration set (cross-checks Yahoo) ──
+        - DTWEXBGS            # Broad trade-weighted US dollar index
+        - DEXJPUS             # JPY/USD exchange rate (yen)
+        - SP500               # S&P 500 index
+        - VIXCLS              # CBOE volatility index (market stress)
+        - DGS10               # US 10-year Treasury yield
+        - GOLDPMGBD228NLBM    # Gold price, London PM fixing
+        # ── International 10y sovereign yields (Yahoo lacks these) ──
+        - IRLTLT01DEM156N     # Germany 10y long-term govt bond yield
+        - IRLTLT01GBM156N     # UK 10y long-term govt bond yield
+        - IRLTLT01JPM156N     # Japan 10y long-term govt bond yield
+      batch_size: 20
     update_cadence: daily
     domains: [commodities, financial, currencies]
     starting_source_weight: 0.95
     enabled: true
     notes: Free API, no key required for standard series. Key needed for bulk.
+
+  - source_id: yahoo_finance
+    canonical_name: Yahoo Finance — public chart endpoint
+    url_base: https://query1.finance.yahoo.com
+    tier: structured_data
+    perspective: us_eu
+    languages: [en]
+    access_method: api
+    access_config:
+      delta_window_days: 5            # trailing trading days for the %-move signal
+      instruments:
+        # Commodities
+        - { symbol: "GC=F",     label: "Gold",                 class: commodity,     dimension: resource_availability, unit: "USD/oz"  }
+        - { symbol: "CL=F",     label: "WTI Crude",            class: commodity,     dimension: resource_availability, unit: "USD/bbl" }
+        - { symbol: "BZ=F",     label: "Brent Crude",          class: commodity,     dimension: resource_availability, unit: "USD/bbl" }
+        # Currencies (five USD majors + broad dollar)
+        - { symbol: "DX-Y.NYB", label: "US Dollar Index",      class: currency,      dimension: economic_stability }
+        - { symbol: "EURUSD=X", label: "EUR/USD",              class: currency,      dimension: economic_stability }
+        - { symbol: "JPY=X",    label: "USD/JPY",              class: currency,      dimension: economic_stability }
+        - { symbol: "GBPUSD=X", label: "GBP/USD",              class: currency,      dimension: economic_stability }
+        - { symbol: "AUDUSD=X", label: "AUD/USD",              class: currency,      dimension: economic_stability }
+        - { symbol: "USDCAD=X", label: "USD/CAD",              class: currency,      dimension: economic_stability }
+        # Equity indices (ten largest exchanges)
+        - { symbol: "^GSPC",    label: "S&P 500",              class: equity_index,  dimension: economic_stability }
+        - { symbol: "^IXIC",    label: "Nasdaq Composite",     class: equity_index,  dimension: economic_stability }
+        - { symbol: "^DJI",     label: "Dow Jones Industrial", class: equity_index,  dimension: economic_stability }
+        - { symbol: "^FTSE",    label: "FTSE 100",             class: equity_index,  dimension: economic_stability }
+        - { symbol: "^GDAXI",   label: "DAX",                  class: equity_index,  dimension: economic_stability }
+        - { symbol: "^FCHI",    label: "CAC 40",               class: equity_index,  dimension: economic_stability }
+        - { symbol: "^N225",    label: "Nikkei 225",           class: equity_index,  dimension: economic_stability }
+        - { symbol: "^HSI",     label: "Hang Seng",            class: equity_index,  dimension: economic_stability }
+        - { symbol: "000001.SS",label: "Shanghai Composite",   class: equity_index,  dimension: economic_stability }
+        - { symbol: "^BSESN",   label: "BSE Sensex",           class: equity_index,  dimension: economic_stability }
+        # Sovereign yield (US 10y; international 10y come from FRED)
+        - { symbol: "^TNX",     label: "US 10y Treasury Yield",class: bond_yield,    dimension: economic_stability, unit: "%" }
+    update_cadence: daily
+    domains: [financial, commodities, currencies]
+    starting_source_weight: 0.9
+    enabled: true
+    notes: Public chart JSON endpoint; no key, no library. Corroborates FRED on overlapping macros.
 
   - source_id: usgs_earthquakes
     canonical_name: USGS Earthquake Hazards Program

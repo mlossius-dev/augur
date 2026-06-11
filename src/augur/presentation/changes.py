@@ -17,7 +17,7 @@ condition activations/deactivations second, new edges third.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -45,6 +45,8 @@ class ChangeRecord:
     weight_before: str | None   # For edge changes: previous weight band
     weight_after: str | None    # For edge changes: new weight band
     impact_rank: int            # Lower = more impactful (for sorting)
+    downstream_edge_count: int = 0  # 1-hop live edges incident to the affected node(s)
+    topic_ids: list[str] = field(default_factory=list)  # topics whose subgraph contains the target
 
 
 # Impact weights for sorting
@@ -211,7 +213,126 @@ async def get_recent_changes(
 
     # Sort by impact rank, then recency
     unique.sort(key=lambda c: (c.impact_rank, c.occurred_at), reverse=False)
-    return unique[:limit]
+    result = unique[:limit]
+
+    await _attach_downstream_counts(pool, result)
+    await _attach_topic_membership(pool, result)
+    return result
+
+
+async def _attach_downstream_counts(
+    pool: asyncpg.Pool,
+    changes: list[ChangeRecord],
+) -> None:
+    """
+    Populate ``downstream_edge_count`` on each change: the number of live edges
+    in the immediate (1-hop) neighbourhood of the affected target.
+
+    For a node target that is its edge degree. For an edge target it is the
+    count of other live edges sharing either endpoint — the edge's local blast
+    radius. Two batched queries over the (small) final change set; no traversal.
+    """
+    if not changes:
+        return
+
+    node_ids = [c.target_id for c in changes if c.target_type == "node"]
+    edge_ids = [c.target_id for c in changes if c.target_type == "edge"]
+
+    node_counts: dict[str, int] = {}
+    edge_counts: dict[str, int] = {}
+
+    async with pool.acquire() as conn:
+        if node_ids:
+            rows = await conn.fetch(
+                """
+                SELECT nid::text AS nid, COUNT(*) AS cnt FROM (
+                    SELECT source_node_id AS nid FROM edges WHERE NOT deprecated
+                    UNION ALL
+                    SELECT target_node_id AS nid FROM edges WHERE NOT deprecated
+                ) x
+                WHERE nid = ANY($1::uuid[])
+                GROUP BY nid
+                """,
+                node_ids,
+            )
+            node_counts = {r["nid"]: int(r["cnt"]) for r in rows}
+
+        if edge_ids:
+            rows = await conn.fetch(
+                """
+                SELECT e.edge_id::text AS eid,
+                       (SELECT COUNT(*) FROM edges x
+                        WHERE NOT x.deprecated
+                          AND x.edge_id <> e.edge_id
+                          AND (x.source_node_id IN (e.source_node_id, e.target_node_id)
+                               OR x.target_node_id IN (e.source_node_id, e.target_node_id))
+                       ) AS cnt
+                FROM edges e
+                WHERE e.edge_id = ANY($1::uuid[])
+                """,
+                edge_ids,
+            )
+            edge_counts = {r["eid"]: int(r["cnt"]) for r in rows}
+
+    for c in changes:
+        if c.target_type == "node":
+            c.downstream_edge_count = node_counts.get(c.target_id, 0)
+        else:
+            c.downstream_edge_count = edge_counts.get(c.target_id, 0)
+
+
+async def _attach_topic_membership(
+    pool: asyncpg.Pool,
+    changes: list[ChangeRecord],
+) -> None:
+    """
+    Populate ``topic_ids`` on each change by real graph membership, not keyword
+    guessing: a change belongs to a topic when its target node (or, for an edge
+    target, either endpoint) sits in that topic's node set.
+
+    Two batched lookups over ``topic_nodes``; the frontend uses these to merge
+    the 24h change log into the causal-thread (topic) list.
+    """
+    if not changes:
+        return
+
+    node_ids = [c.target_id for c in changes if c.target_type == "node"]
+    edge_ids = [c.target_id for c in changes if c.target_type == "edge"]
+
+    node_topics: dict[str, list[str]] = {}
+    edge_topics: dict[str, list[str]] = {}
+
+    async with pool.acquire() as conn:
+        if node_ids:
+            rows = await conn.fetch(
+                """
+                SELECT tn.node_id::text AS nid, tn.topic_id::text AS tid
+                FROM topic_nodes tn
+                WHERE tn.node_id = ANY($1::uuid[])
+                """,
+                node_ids,
+            )
+            for r in rows:
+                node_topics.setdefault(r["nid"], []).append(r["tid"])
+
+        if edge_ids:
+            rows = await conn.fetch(
+                """
+                SELECT e.edge_id::text AS eid, tn.topic_id::text AS tid
+                FROM edges e
+                JOIN topic_nodes tn
+                  ON tn.node_id = e.source_node_id OR tn.node_id = e.target_node_id
+                WHERE e.edge_id = ANY($1::uuid[])
+                """,
+                edge_ids,
+            )
+            for r in rows:
+                edge_topics.setdefault(r["eid"], []).append(r["tid"])
+
+    for c in changes:
+        src = node_topics if c.target_type == "node" else edge_topics
+        # De-duplicate while preserving order (an edge can touch the same topic twice).
+        c.topic_ids = list(dict.fromkeys(src.get(c.target_id, [])))
 
 
 def _infer_dimension(text: str) -> str:

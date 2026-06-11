@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from augur.presentation.changes import ChangeRecord, get_recent_changes
 from augur.presentation.dimensions import DimensionScore, compute_dimension_scores
+from augur.presentation.notes import get_dimension_notes
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["home"])
@@ -34,7 +35,7 @@ def _as_of(as_of: str | None) -> datetime | None:
         return None
 
 
-def _serialise_dimension(d: DimensionScore) -> dict[str, Any]:
+def _serialise_dimension(d: DimensionScore, note: str = "") -> dict[str, Any]:
     return {
         "dimension": d.dimension,
         "label": d.label,
@@ -43,6 +44,12 @@ def _serialise_dimension(d: DimensionScore) -> dict[str, Any]:
         "active_conditions": d.active_conditions,
         "total_conditions": d.total_conditions,
         "strong_edge_count": d.strong_edge_count,
+        "weak_edge_count": d.weak_edge_count,
+        "rate": d.rate,
+        "rate_label": d.rate_label,
+        "acceleration": d.acceleration,
+        "accel_label": d.accel_label,
+        "note": note,
         "sparkline": [
             {
                 "week_start": sp.week_start,
@@ -67,6 +74,9 @@ def _serialise_change(c: ChangeRecord) -> dict[str, Any]:
         "target_name": c.target_name,
         "weight_before": c.weight_before,
         "weight_after": c.weight_after,
+        "impact_rank": c.impact_rank,
+        "downstream_edge_count": c.downstream_edge_count,
+        "topic_ids": c.topic_ids,
     }
 
 
@@ -87,9 +97,12 @@ async def home_view(
     dimensions = await compute_dimension_scores(pool, as_of=ts)
     changes = await get_recent_changes(pool, hours=24, as_of=ts, limit=12)
 
+    # Editorial notes reflect the *current* 24h; only attach them to the live view.
+    notes = await get_dimension_notes(pool) if ts is None else {}
+
     return JSONResponse({
         "as_of": (ts or datetime.utcnow()).isoformat(),
-        "dimensions": [_serialise_dimension(d) for d in dimensions],
+        "dimensions": [_serialise_dimension(d, notes.get(d.dimension, "")) for d in dimensions],
         "changes": [_serialise_change(c) for c in changes],
     })
 

@@ -78,6 +78,7 @@ def form_batches(
     signals: list[dict[str, Any]],
     *,
     force: bool = False,
+    max_hold_hours: float | None = None,
 ) -> list[AnchorBatch]:
     """
     Group a flat list of signals into topically-coherent AnchorBatch objects.
@@ -86,11 +87,17 @@ def form_batches(
         signals: Unanchored signals from TierAStore.get_unanchored().
         force: If True, include batches smaller than MIN_BATCH_SIZE.
                Used when the operator manually triggers anchoring.
+        max_hold_hours: If set, a sub-MIN_BATCH_SIZE batch is released anyway
+               once its oldest signal has waited longer than this many hours.
+               This is the cold-start / low-volume escape hatch: on a sparse
+               graph almost every signal is topically unique, so without it the
+               small batches would be held back forever and the graph could
+               never bootstrap. None preserves the strict hold-back behaviour.
 
     Returns:
         A list of AnchorBatch objects, each containing at most MAX_BATCH_SIZE
         signals.  Signals with no proposed_anchors form their own singleton
-        batches (dropped unless force=True).
+        batches (dropped unless force=True or they are overdue).
     """
     if not signals:
         return []
@@ -128,6 +135,7 @@ def form_batches(
         root = find(idx)
         groups.setdefault(root, []).append(idx)
 
+    now = datetime.now(timezone.utc)
     batches: list[AnchorBatch] = []
     for indices in groups.values():
         # Split oversized groups into windows
@@ -136,7 +144,11 @@ def form_batches(
             batch_signals = [signals[i] for i in window]
 
             if len(batch_signals) < MIN_BATCH_SIZE and not force:
-                continue
+                # Normally held back to be absorbed by a larger future batch —
+                # but release it if it has already waited past max_hold_hours so
+                # a sparse / cold-start graph can still bootstrap.
+                if not _batch_overdue(batch_signals, now, max_hold_hours):
+                    continue
 
             lens_ids = frozenset(
                 s["lens_id"] for s in batch_signals if s.get("lens_id")
@@ -146,6 +158,30 @@ def form_batches(
             )
 
     return batches
+
+
+def _batch_overdue(
+    batch_signals: list[dict[str, Any]],
+    now: datetime,
+    max_hold_hours: float | None,
+) -> bool:
+    """
+    True if a sub-MIN_BATCH_SIZE batch has waited long enough that it should be
+    anchored anyway rather than held back indefinitely.
+    """
+    if max_hold_hours is None:
+        return False
+    extracted = [
+        s["extracted_at"]
+        for s in batch_signals
+        if s.get("extracted_at") is not None
+    ]
+    if not extracted:
+        return False
+    oldest = min(extracted)
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    return (now - oldest).total_seconds() >= max_hold_hours * 3600
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

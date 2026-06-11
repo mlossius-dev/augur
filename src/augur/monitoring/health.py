@@ -32,6 +32,7 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
             SELECT
                 COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE fetched_at > now() - interval '24 hours') AS last_24h,
+                COUNT(*) FILTER (WHERE fetched_at > now() - interval '4 hours') AS last_4h,
                 COUNT(*) FILTER (WHERE fetched_at > now() - interval '1 hour') AS last_hour,
                 COUNT(*) FILTER (WHERE cluster_id IS NULL) AS unclustered,
                 COUNT(*) FILTER (WHERE cluster_id IS NOT NULL) AS clustered
@@ -45,8 +46,12 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
             SELECT
                 (SELECT COUNT(*) FROM nodes WHERE NOT deprecated) AS live_nodes,
                 (SELECT COUNT(*) FROM nodes WHERE deprecated) AS deprecated_nodes,
+                (SELECT COUNT(*) FROM nodes
+                   WHERE NOT deprecated AND created_at > now() - interval '24 hours') AS nodes_24h,
                 (SELECT COUNT(*) FROM edges WHERE NOT deprecated) AS live_edges,
                 (SELECT COUNT(*) FROM edges WHERE deprecated) AS deprecated_edges,
+                (SELECT COUNT(*) FROM edges
+                   WHERE NOT deprecated AND created_at > now() - interval '24 hours') AS edges_24h,
                 (SELECT COUNT(*) FROM edges WHERE current_weight_band = 'strong') AS strong_edges,
                 (SELECT COUNT(*) FROM edges WHERE current_weight_band = 'disputed') AS disputed_edges
             """
@@ -116,6 +121,7 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
             """
             SELECT
                 COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE fetched_at > now() - interval '4 hours') AS last_4h,
                 COUNT(*) FILTER (WHERE rejected) AS rejected
             FROM payloads
             WHERE fetched_at > now() - interval '24 hours'
@@ -139,6 +145,7 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         "signals": {
             "total": int(signal_row["total"] or 0),
             "last_24h": int(signal_row["last_24h"] or 0),
+            "last_4h": int(signal_row["last_4h"] or 0),
             "last_hour": int(signal_row["last_hour"] or 0),
             "unclustered": int(signal_row["unclustered"] or 0),
             "clustered": int(signal_row["clustered"] or 0),
@@ -146,8 +153,10 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         "graph": {
             "live_nodes": int(graph_row["live_nodes"] or 0),
             "deprecated_nodes": int(graph_row["deprecated_nodes"] or 0),
+            "nodes_24h": int(graph_row["nodes_24h"] or 0),
             "live_edges": int(graph_row["live_edges"] or 0),
             "deprecated_edges": int(graph_row["deprecated_edges"] or 0),
+            "edges_24h": int(graph_row["edges_24h"] or 0),
             "strong_edges": int(graph_row["strong_edges"] or 0),
             "disputed_edges": int(graph_row["disputed_edges"] or 0),
         },
@@ -157,6 +166,7 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         },
         "payloads_24h": {
             "total": int(payload_row["total"] or 0),
+            "last_4h": int(payload_row["last_4h"] or 0),
             "rejected": int(payload_row["rejected"] or 0),
         },
         "recent_jobs": job_summary,

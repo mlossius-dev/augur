@@ -26,6 +26,7 @@ class PipelineStage(StrEnum):
     DISCONFIRMATION = "disconfirmation"
     PROJECTION = "projection"
     CONVERSATION = "conversation"
+    DIGEST = "digest"
 
 
 # Default model routing table.  Override individual entries via environment
@@ -41,8 +42,12 @@ DEFAULT_MODEL_ROUTING: dict[PipelineStage, str] = {
     PipelineStage.PROJECTION: "anthropic/claude-3.5-sonnet",
     # Free-tier for conversation (routes through the free-tier API key)
     PipelineStage.CONVERSATION: "google/gemini-2.0-flash-exp:free",
+    # Free-tier for dimension digest notes — grounded summaries, zero cost
+    PipelineStage.DIGEST: "google/gemini-2.0-flash-exp:free",
 }
 
 # Stages that must use the free-tier OpenRouter key.
 # The LLM client enforces this split; calling code never chooses the key.
-FREE_TIER_STAGES: frozenset[PipelineStage] = frozenset({PipelineStage.CONVERSATION})
+FREE_TIER_STAGES: frozenset[PipelineStage] = frozenset(
+    {PipelineStage.CONVERSATION, PipelineStage.DIGEST}
+)
