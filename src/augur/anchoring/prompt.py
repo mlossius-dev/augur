@@ -111,6 +111,14 @@ given the current graph state.
 6. If nothing in the signal batch warrants a graph mutation, return [].
 7. Do NOT invent nodes or edges not supported by the signal batch.
 
+**Bootstrapping a sparse or empty graph.** When the subgraph context above is
+empty or contains no nodes relevant to these signals, there is simply nothing
+to reuse yet — this is expected early in the graph's life and is NOT a reason to
+return an empty result. Create the entity, condition, and event nodes the
+signal batch clearly supports, plus the well-evidenced edges between them (still
+at conservative weight bands). Rule 1 ("reuse existing nodes") applies only when
+matching nodes actually exist.
+
 Return ONLY a valid JSON array. No prose, no markdown fences.
 """
 

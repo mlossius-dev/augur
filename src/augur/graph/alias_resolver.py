@@ -122,8 +122,6 @@ class AliasResolver:
         The alias_text is stored in its original form; lookups are
         case-insensitive via `lower(alias_text) = lower($1)`.
         """
-        execute = conn.execute if conn else (await self._pool.acquire()).execute
-
         async def _run(c) -> None:
             await c.execute(
                 """

@@ -123,6 +123,7 @@ class AnchoringOrchestrator:
         min_age_hours: int = 1,
         limit: int = 200,
         force: bool = False,
+        max_hold_hours: float | None = 6.0,
     ) -> AnchoringCycleResult:
         """
         Run one full anchoring cycle.
@@ -135,6 +136,10 @@ class AnchoringOrchestrator:
             min_age_hours: Minimum signal age before anchoring.
             limit: Maximum signals to pull from Tier A per cycle.
             force: Pass to form_batches; includes under-MIN_BATCH_SIZE batches.
+            max_hold_hours: Release sub-MIN_BATCH_SIZE batches whose oldest
+                signal has waited this long, so a sparse / cold-start graph can
+                bootstrap instead of holding singletons back forever. None
+                disables the escape hatch (strict hold-back).
         """
         cycle = AnchoringCycleResult()
 
@@ -150,7 +155,7 @@ class AnchoringOrchestrator:
             return cycle
 
         log.info("anchoring.signals_pulled", n=len(signals))
-        batches = form_batches(signals, force=force)
+        batches = form_batches(signals, force=force, max_hold_hours=max_hold_hours)
         log.info("anchoring.batches_formed", n=len(batches))
 
         for batch in batches:

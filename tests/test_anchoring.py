@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,6 +52,7 @@ def _make_signal(
     lens_id: str = "commodities",
     entity_names: list[str] | None = None,
     content_timestamp: datetime = _TS,
+    extracted_at: datetime | None = None,
 ) -> dict[str, Any]:
     anchors = []
     for name in (entity_names or []):
@@ -69,7 +70,7 @@ def _make_signal(
         "claim_text": claim,
         "confidence_band": "reported_claim",
         "content_timestamp": content_timestamp,
-        "extracted_at": datetime.now(timezone.utc),
+        "extracted_at": extracted_at or datetime.now(timezone.utc),
         "proposed_anchors": anchors,
         "anchored": False,
     }
@@ -121,6 +122,26 @@ class TestFormBatches:
         s1 = _make_signal("Signal A.", entity_names=["Entity A"])
         batches = form_batches([s1], force=True)
         assert len(batches) == 1
+
+    def test_overdue_singleton_released_by_max_hold(self):
+        # Cold-start escape hatch: a lone signal that has waited past
+        # max_hold_hours anchors even though it is under MIN_BATCH_SIZE.
+        old = datetime.now(timezone.utc) - timedelta(hours=8)
+        s1 = _make_signal("Signal A.", entity_names=["Entity A"], extracted_at=old)
+        batches = form_batches([s1], force=False, max_hold_hours=6.0)
+        assert len(batches) == 1
+
+    def test_fresh_singleton_still_held_under_max_hold(self):
+        # A fresh lone signal is still held back to absorb into a future batch.
+        s1 = _make_signal("Signal A.", entity_names=["Entity A"])
+        batches = form_batches([s1], force=False, max_hold_hours=6.0)
+        assert batches == []
+
+    def test_max_hold_none_preserves_strict_holdback(self):
+        old = datetime.now(timezone.utc) - timedelta(hours=48)
+        s1 = _make_signal("Signal A.", entity_names=["Entity A"], extracted_at=old)
+        batches = form_batches([s1], force=False, max_hold_hours=None)
+        assert batches == []
 
     def test_no_anchor_signals_grouped_separately(self):
         # Signals without proposed_anchors have empty entity sets → each gets own group
