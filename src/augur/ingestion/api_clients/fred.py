@@ -47,8 +47,14 @@ class FredClient:
         api_key = self._api_key(source)
         results: list[FetchResult] = []
 
-        # Only fetch observations from the last 7 days to keep payloads fresh
-        observation_start = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        # Look back far enough to catch the latest observation of *monthly*
+        # series (e.g. OECD long-term yields, world crop prices) — a 7-day
+        # window silently misses them. Daily series are unaffected: the client
+        # always takes the most recent observation regardless of window width.
+        lookback_days = int(source.access_config.get("observation_lookback_days", 45))
+        observation_start = (
+            datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        ).strftime("%Y-%m-%d")
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             for series_id in series_ids:
@@ -155,4 +161,13 @@ _SERIES_LABELS: dict[str, str] = {
     "DEXCHUS": "CNY/USD Exchange Rate",
     "PET.WTIPUUS.W": "US Weekly Crude Oil Production",
     "NG.N9010US2.W": "US Natural Gas Production",
+    "DTWEXBGS": "Broad Trade-Weighted US Dollar Index",
+    "DEXJPUS": "JPY/USD Exchange Rate",
+    "SP500": "S&P 500 Index",
+    "VIXCLS": "CBOE Volatility Index (VIX)",
+    "DGS10": "US 10-Year Treasury Yield (%)",
+    "GOLDPMGBD228NLBM": "Gold Price, London PM Fixing (USD/oz)",
+    "IRLTLT01DEM156N": "Germany 10-Year Government Bond Yield (%)",
+    "IRLTLT01GBM156N": "UK 10-Year Government Bond Yield (%)",
+    "IRLTLT01JPM156N": "Japan 10-Year Government Bond Yield (%)",
 }
