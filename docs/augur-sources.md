@@ -393,6 +393,26 @@ The case for the alternative (selective inclusion):
 
 The Tier 0 physical and environmental sources listed above (USGS, ADS-B, AIS, FRED, etc.) are also categorized as structured-data sources. The `physical_world` lens consumes them directly without LLM extraction; values become signals via deterministic threshold and anomaly detection.
 
+#### Market-data axis (2026-06)
+
+Macro market series are a structured-data signal axis, sourced from **two independent free providers for corroboration** rather than one — FRED (already integrated) and **Yahoo Finance** (its public chart JSON endpoint, fetched directly over HTTP; no paid tier, no terminal, no heavyweight client library). Per the exclusions below, no paid market feed is used or depended on.
+
+The curated set is deliberately small and macro — pulling *all* market data is noise:
+
+- **Commodities:** gold, Brent + WTI crude.
+- **Currencies:** the five USD majors (EUR, JPY, GBP, CHF, CAD/AUD) plus the broad dollar index.
+- **Equities:** the ten largest exchange indices (e.g. S&P 500, Nasdaq, Euro Stoxx 50 / DAX, FTSE 100, Nikkei 225, Hang Seng, Shanghai Composite, Sensex) as a global risk-appetite read.
+- **Rates:** the five most-watched 10-year sovereign yields (US, Germany, UK, Japan, and one more).
+
+Per the structured-data rule above, these become signals **deterministically**: the fetcher computes the percentage change over a trailing window and emits a clean, pre-computed market-move statement (e.g. "Brent crude +4.2% over 5 trading days, $82.40 → $85.86") rather than handing a bare number to a prose lens to interpret. FRED and Yahoo are cross-checked on series both carry — agreement strengthens the signal, divergence flags a data issue (and feeds source calibration). Dimension mapping: commodities → resource / geopolitical; currencies, equities, and rates → economic stability.
+
+Caveat: Yahoo's endpoint is unofficial (no SLA, may rate-limit). Acceptable for a single-operator public-data tool and consistent with the "must not depend on any one source" posture, since FRED corroborates the core macros.
+
+#### Evaluated source additions (2026-06)
+
+- **GDELT** — admissible (free, structured global event/tone data; not paid, social, or AI-generated). But it is a *news/events* axis, not market data, and a large firehose needing its own filtering and dedup against existing wire/RSS coverage. It goes through the normal source-admission process as its **own project**, separate from the market work.
+- **Google Trends / `pytrends`** — **deferred, experimental.** Search-interest is *relative* (0–100 normalised), heavily rate-limited, and reached via an unofficial client; the "signal-to-noise doesn't justify the integration cost" concern that excludes social media applies here too. Revisit later as a possible *attention* signal, not a core source.
+
 ---
 
 ## Source admission process
