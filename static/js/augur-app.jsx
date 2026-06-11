@@ -72,6 +72,7 @@ function adaptDim(d) {
     accelLabel:d.accel_label || "",
     strong:    d.strong_edge_count ?? 0,
     weak:      d.weak_edge_count ?? 0,
+    note:      d.note || "",
   };
 }
 
@@ -370,7 +371,12 @@ function DomainLedger({ dim, changes, onClose }) {
             {dim.latin}
           </div>
         )}
-        <div style={{ marginTop:12, fontFamily:serif, fontSize:14, lineHeight:1.5, color:P.ink2 }}>
+        {dim.note && (
+          <div style={{ marginTop:12, fontFamily:serif, fontSize:14, lineHeight:1.55, color:P.natt }}>
+            {dim.note}
+          </div>
+        )}
+        <div style={{ marginTop:dim.note?8:12, fontFamily:serif, fontSize:13.5, lineHeight:1.5, color:P.ink3 }}>
           {dim.active} of {dim.total} conditions active.
         </div>
         <div style={{ marginTop:14, fontFamily:mono, fontSize:10, color:P.ink3, lineHeight:1.7, letterSpacing:".04em" }}>

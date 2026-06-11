@@ -222,6 +222,19 @@ async def _anchoring_job(app_state: Any) -> None:
         log.error("scheduler.anchoring_failed", error=str(exc))
 
 
+async def _dimension_notes_job(app_state: Any) -> None:
+    """Hourly: refresh per-dimension editorial notes (free-tier model)."""
+    from augur.presentation.notes import regenerate_dimension_notes
+
+    pool = app_state.raw_pool
+    llm = app_state.llm_client
+    try:
+        summary = await regenerate_dimension_notes(pool, llm)
+        log.info("scheduler.dimension_notes_done", summary=summary)
+    except Exception as exc:
+        log.error("scheduler.dimension_notes_failed", error=str(exc))
+
+
 async def _prune_sessions_job(app_state: Any) -> None:
     """Weekly session pruning: remove stale conversation sessions."""
     from augur.conversation.session import prune_sessions
@@ -311,6 +324,17 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:25:00"),
         id="anchoring",
         name="Anchoring pipeline",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+
+    # Dimension notes: every hour at :40 (after anchoring has settled)
+    scheduler.add_job(
+        func=lambda: asyncio.ensure_future(_dimension_notes_job(app_state)),
+        trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:40:00"),
+        id="dimension_notes",
+        name="Dimension editorial notes",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=300,
