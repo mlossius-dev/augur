@@ -194,8 +194,9 @@ These need a **new external source, an LLM/curation pipeline, or finer geo data*
 | Change meta deltas (market quotes) | A market-data source/feed feeding change records | New source — `augur-sources.md` revision |
 | City-precise "your latitude" | Client geocoder, or finer `region_scope_definitions` | Geolocation precision question |
 | Hyper-local change items | Sub-regional graph coverage (likely out of reach near-term) | Data-availability question |
-| Scrubber event markers | A "notable events" table/endpoint + curation | Self-contained but needs new storage |
 | Operator id / subscription / edition / build / hash | **Conflicts with `augur-presentation.md` line 106** and single-operator design | **Documents-first required** before building |
+
+**Scrubber event markers — done.** The first hard item built: a `notable_events` table (migration `008`, seeded with real dated events — the design's fabricated "Hormuz tabling" omitted), a `GET /api/events` endpoint, and the almanac scrubber now positions each marker on the track by its real `occurred_at`. Operator-extensible by inserting rows.
 
 **Note on derived metrics:** rate/acceleration, confidence, and topic attention use **starting-point thresholds** (e.g. share-points/week bands, the 0.33/0.66 confidence cuts). They should be tuned once real signal volume exists; the methods live in the modules cited in §0.
 

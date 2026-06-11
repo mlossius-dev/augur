@@ -34,17 +34,6 @@ const DIM_META = {
 const BAND_U = { Improving: 0.1, Stable: 0.3, Strained: 0.5, Deteriorating: 0.7, Crisis: 0.9, Unknown: 0.5 };
 const BAND_ORDER = ["Improving", "Stable", "Strained", "Deteriorating", "Crisis"];
 
-const SCRUB_EVENTS = [
-  { t: 0.02, label: "Russia–Ukraine"      },
-  { t: 0.16, label: "Energy crisis peak"  },
-  { t: 0.28, label: "SVB stress"          },
-  { t: 0.41, label: "Israel–Gaza"         },
-  { t: 0.55, label: "Red Sea escalation"  },
-  { t: 0.68, label: "AI capex inflection" },
-  { t: 0.79, label: "Yen carry unwind"    },
-  { t: 0.91, label: "Hormuz tabling"      },
-];
-
 const SCRUB_START_MS = Date.UTC(new Date().getFullYear() - 4, 0, 1);
 const SCRUB_END_MS   = Date.now();
 const SCRUB_SPAN_MS  = SCRUB_END_MS - SCRUB_START_MS;
@@ -741,7 +730,15 @@ function LiveHeader({ statusData }) {
 
 // ── AlmanacScrubber ───────────────────────────────────────────────────────────
 
-function AlmanacScrubber({ asOf, onChange }) {
+function AlmanacScrubber({ asOf, onChange, events }) {
+  // Real notable events (from /api/events) positioned on the track by date.
+  const marks = (events || [])
+    .map(e => ({
+      ...e,
+      t: (new Date(e.occurred_at).getTime() - SCRUB_START_MS) / SCRUB_SPAN_MS,
+    }))
+    .filter(e => e.t >= 0 && e.t <= 1);
+
   const trackRef = useRef(null);
 
   const asOfMs = asOf ? new Date(asOf).getTime() : SCRUB_END_MS;
@@ -804,8 +801,9 @@ function AlmanacScrubber({ asOf, onChange }) {
             </div>
           );
         })}
-        {SCRUB_EVENTS.map((e, i) => (
-          <div key={i} className="ag-scrub-event" style={{ left:`${e.t*100}%` }}>
+        {marks.map((e, i) => (
+          <div key={e.event_id||i} className="ag-scrub-event" style={{ left:`${e.t*100}%` }}
+               title={e.description || e.label}>
             <span className="ag-scrub-event-label" style={{
               transform: e.t > 0.9 ? "translate(-95%,-2px)" : e.t < 0.06 ? "translate(-5%,-2px)" : "translate(-50%,-2px)"
             }}>{e.label}</span>
@@ -1327,6 +1325,7 @@ function App() {
   const [asOf, setAsOf]           = useState(null);
   const [geoData, setGeoData]     = useState(null);
   const [convOpen, setConvOpen]   = useState(false);
+  const [scrubEvents, setScrubEvents] = useState([]);
 
   // Load home data whenever asOf changes
   useEffect(() => {
@@ -1349,6 +1348,14 @@ function App() {
     load();
     const id = setInterval(load, 30000);
     return () => clearInterval(id);
+  }, []);
+
+  // Load notable events for the scrubber timeline (once)
+  useEffect(() => {
+    fetch("/api/events")
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(d => setScrubEvents(d.events || []))
+      .catch(() => {});
   }, []);
 
   // ⌘K / Ctrl+K opens conversation
@@ -1493,7 +1500,7 @@ function App() {
         />
       )}
 
-      <AlmanacScrubber asOf={asOf} onChange={setAsOf}/>
+      <AlmanacScrubber asOf={asOf} onChange={setAsOf} events={scrubEvents}/>
 
       <button className="ag-ask-btn" onClick={() => setConvOpen(true)}>
         Ask <span className="ag-ask-name">Augur</span>
