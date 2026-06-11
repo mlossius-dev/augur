@@ -584,7 +584,9 @@ function YourLatitude({ geoData, onRequest }) {
         {geoData.region?.display_name || "Region"}
       </div>
       <div style={{ fontFamily:mono, fontSize:9.5, color:P.ink4, marginBottom:10 }}>
-        continent-scale scope
+        {geoData.approximate
+          ? `≈ IP-based${geoData.ip_location?.country ? " · " + geoData.ip_location.country : ""}`
+          : "continent-scale scope"}
       </div>
 
       <div style={{ display:"flex", gap:8, marginBottom:10 }}>
@@ -1424,9 +1426,19 @@ function App() {
     return () => document.removeEventListener("keydown", h);
   }, []);
 
+  // IP-based fallback when the browser denies/!supports geolocation.
+  const autoGeo = () => {
+    const params = new URLSearchParams();
+    if (asOf) params.set("as_of", asOf);
+    return fetch(`/api/geo/auto?${params}`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(setGeoData)
+      .catch(() => setGeoData("denied"));
+  };
+
   const requestGeo = () => {
-    if (!navigator.geolocation) { setGeoData("denied"); return; }
     setGeoData("loading");
+    if (!navigator.geolocation) { autoGeo(); return; }
     navigator.geolocation.getCurrentPosition(
       pos => {
         const { latitude, longitude } = pos.coords;
@@ -1435,9 +1447,9 @@ function App() {
         fetch(`/api/geo/scope?${params}`)
           .then(r => r.ok ? r.json() : Promise.reject(r.status))
           .then(setGeoData)
-          .catch(() => setGeoData("denied"));
+          .catch(() => autoGeo());
       },
-      () => setGeoData("denied")
+      () => autoGeo()   // denied or unavailable → IP approximation
     );
   };
 
