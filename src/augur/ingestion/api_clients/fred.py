@@ -11,7 +11,6 @@ Rate limit: 120 requests/60s without a key; key-based access is generous.
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -56,13 +55,18 @@ class FredClient:
             datetime.now(timezone.utc) - timedelta(days=lookback_days)
         ).strftime("%Y-%m-%d")
 
+        # Trailing window for the deterministic %-move signal. Date-adaptive:
+        # for daily series this is ~N calendar days back; for monthly series it
+        # naturally resolves to the prior month's observation.
+        window_days = int(source.access_config.get("delta_window_days", 5))
+
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             for series_id in series_ids:
                 params: dict[str, Any] = {
                     "series_id": series_id,
                     "observation_start": observation_start,
                     "sort_order": "desc",
-                    "limit": 5,
+                    "limit": 12,
                     "file_type": "json",
                 }
                 if api_key:
@@ -82,32 +86,19 @@ class FredClient:
                     continue
 
                 observations = data.get("observations", [])
-                if not observations:
+                move = compute_fred_move(observations, window_days)
+                if move is None:
                     continue
+                latest_val, prior_val, pct, latest_date, prior_date = move
 
-                # Most recent observation
-                latest = observations[0]
-                value = latest.get("value", ".")
-                obs_date = latest.get("date", "")
-
-                # Skip missing values
-                if value in (".", ""):
-                    continue
-
-                content_ts = _parse_fred_date(obs_date)
+                content_ts = _parse_fred_date(latest_date)
                 fetched_at = datetime.now(timezone.utc)
-
-                # Build a human-readable representation for the lens to process
                 series_info = _SERIES_LABELS.get(series_id, series_id)
-                content = (
-                    f"FRED data: {series_id} ({series_info})\n"
-                    f"Latest observation: {value} on {obs_date}\n"
-                    f"Previous observations: "
-                    + ", ".join(
-                        f"{o['date']}={o['value']}"
-                        for o in observations[1:4]
-                        if o.get("value") not in (".", "")
-                    )
+
+                # Deterministic market-move statement (same shape as Yahoo), so a
+                # lens anchors a clean signal rather than interpreting raw numbers.
+                content = _build_fred_content(
+                    series_info, series_id, latest_val, prior_val, pct, latest_date, prior_date
                 )
 
                 results.append(
@@ -121,12 +112,16 @@ class FredClient:
                         content_type="structured_feed_entry",
                         language="en",
                         metadata={
+                            # Keys aligned with the Yahoo client for a uniform market feed.
+                            "symbol": series_id,
+                            "label": series_info,
                             "series_id": series_id,
-                            "series_label": series_info,
-                            "latest_value": value,
-                            "latest_date": obs_date,
-                            "raw_observations": json.dumps(observations[:5]),
-                            "source_native_id": f"fred:{series_id}:{obs_date}",
+                            "latest_value": latest_val,
+                            "prior_value": prior_val,
+                            "pct_change": round(pct, 2),
+                            "latest_date": latest_date,
+                            "instrument_class": _fred_class(series_id),
+                            "source_native_id": f"fred:{series_id}:{latest_date}",
                         },
                     )
                 )
@@ -145,6 +140,86 @@ def _parse_fred_date(date_str: str) -> datetime | None:
         return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+def compute_fred_move(
+    observations: list[dict[str, Any]], window_days: int
+) -> tuple[float, float, float, str, str] | None:
+    """
+    Compute the percentage move of the latest observation versus the most recent
+    observation at least ``window_days`` calendar days earlier.
+
+    ``observations`` is FRED's response list (sorted desc, values may be "."),
+    each ``{"date": "YYYY-MM-DD", "value": "..."}``. Date-adaptive: daily series
+    yield a ~window-day move; monthly series resolve to the prior month.
+
+    Returns (latest_value, prior_value, pct_change, latest_date, prior_date)
+    or None if not computable.
+    """
+    pts: list[tuple[str, float]] = []
+    for o in observations:
+        v = o.get("value", ".")
+        d = o.get("date", "")
+        if v in (".", "", None) or not d:
+            continue
+        try:
+            pts.append((d, float(v)))
+        except (TypeError, ValueError):
+            continue
+    if len(pts) < 2:
+        return None
+
+    latest_date, latest_val = pts[0]
+    ld = _parse_fred_date(latest_date)
+    if ld is None:
+        return None
+    target = ld - timedelta(days=window_days)
+
+    prior_date, prior_val = pts[-1]  # fall back to the oldest available
+    for d, v in pts[1:]:
+        dd = _parse_fred_date(d)
+        if dd is not None and dd <= target:
+            prior_date, prior_val = d, v
+            break
+    if prior_val == 0:
+        return None
+
+    pct = (latest_val - prior_val) / prior_val * 100.0
+    return latest_val, prior_val, pct, latest_date, prior_date
+
+
+def _build_fred_content(
+    label: str,
+    series_id: str,
+    latest: float,
+    prior: float,
+    pct: float,
+    latest_date: str,
+    prior_date: str,
+) -> str:
+    direction = "rose" if pct > 0 else "fell" if pct < 0 else "was unchanged"
+    sign = "+" if pct > 0 else ""
+    return (
+        f"Market move: {label} ({series_id}) {direction} {sign}{pct:.2f}% "
+        f"between {prior_date} and {latest_date}, {prior:g} → {latest:g}."
+    )
+
+
+# Coarse instrument classification for the market tape, by FRED series id.
+def _fred_class(series_id: str) -> str:
+    if series_id in {"DCOILWTICO", "DCOILBRENTEU", "GOLDPMGBD228NLBM",
+                     "GASREGCOVW", "PNGASEUUSDM", "PWHEAMTUSDM",
+                     "PCORNUSDM", "PSOYBUSDM"}:
+        return "commodity"
+    if series_id.startswith("DEX") or series_id == "DTWEXBGS":
+        return "currency"
+    if series_id in {"SP500", "NASDAQCOM"}:
+        return "equity_index"
+    if series_id == "VIXCLS":
+        return "volatility"
+    if series_id == "DGS10" or series_id.startswith("IRLTLT01"):
+        return "bond_yield"
+    return ""
 
 
 # Human-readable labels for FRED series IDs used in content generation

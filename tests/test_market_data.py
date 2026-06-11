@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from augur.ingestion.api_clients.fred import compute_fred_move
 from augur.ingestion.api_clients.yahoo_finance import (
     _build_content,
     _extract_closes,
@@ -106,3 +107,47 @@ class TestBuildContent:
     def test_fall_statement(self):
         text = _build_content("S&P 500", "^GSPC", 5000.0, 5250.0, -4.76, 5, "")
         assert "fell -4.76%" in text
+
+
+# ── compute_fred_move (date-adaptive) ─────────────────────────────────────────
+
+
+def _obs(*pairs):
+    """Build a FRED-style desc observation list from (date, value) pairs."""
+    return [{"date": d, "value": v} for d, v in pairs]
+
+
+class TestComputeFredMove:
+    def test_daily_window(self):
+        obs = _obs(
+            ("2026-06-10", "105"), ("2026-06-09", "104"), ("2026-06-08", "103"),
+            ("2026-06-07", "102"), ("2026-06-06", "101"), ("2026-06-05", "100"),
+        )
+        move = compute_fred_move(obs, window_days=5)
+        assert move is not None
+        latest, prior, pct, ld, pd = move
+        assert latest == 105.0 and prior == 100.0
+        assert pct == pytest.approx(5.0)
+        assert ld == "2026-06-10" and pd == "2026-06-05"
+
+    def test_monthly_resolves_to_prior_month(self):
+        # A 5-day window on monthly data picks the previous month's observation.
+        obs = _obs(("2026-06-01", "110"), ("2026-05-01", "100"), ("2026-04-01", "95"))
+        move = compute_fred_move(obs, window_days=5)
+        latest, prior, pct, ld, pd = move
+        assert prior == 100.0 and pd == "2026-05-01"
+        assert pct == pytest.approx(10.0)
+
+    def test_missing_values_filtered(self):
+        obs = _obs(("2026-06-10", "105"), ("2026-06-09", "."), ("2026-06-05", "100"))
+        move = compute_fred_move(obs, window_days=5)
+        assert move is not None
+        assert move[0] == 105.0 and move[1] == 100.0
+
+    def test_too_few_valid_returns_none(self):
+        assert compute_fred_move(_obs(("2026-06-10", "105")), window_days=5) is None
+        assert compute_fred_move(_obs(("2026-06-10", ".")), window_days=5) is None
+
+    def test_zero_prior_returns_none(self):
+        obs = _obs(("2026-06-10", "1"), ("2026-06-05", "0"))
+        assert compute_fred_move(obs, window_days=5) is None

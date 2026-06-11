@@ -728,6 +728,45 @@ function LiveHeader({ statusData }) {
   );
 }
 
+// ── MarketTape ────────────────────────────────────────────────────────────────
+
+function fmtTapeValue(v) {
+  if (v == null) return "";
+  if (Math.abs(v) >= 1000) return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (Math.abs(v) >= 1) return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+function MarketTape({ instruments }) {
+  if (!instruments || instruments.length === 0) return null;
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:0, padding:"0 48px",
+                  borderBottom:`1px solid ${P.natt}`, background:P.bein,
+                  overflowX:"auto", whiteSpace:"nowrap" }}>
+      <span style={{ fontFamily:mono, fontSize:8.5, letterSpacing:".18em", color:P.ink4,
+                     padding:"6px 14px 6px 0", borderRight:`1px solid ${P.rule}`, flexShrink:0 }}>
+        MARKET · 5D
+      </span>
+      {instruments.map((m, i) => {
+        // Direction colour only — not valence (oil up ≠ "good").
+        const up = m.pct_change > 0, down = m.pct_change < 0;
+        const col = up ? P.mose : down ? P.leirstein : P.ink3;
+        const arrow = up ? "▲" : down ? "▼" : "·";
+        const sign = up ? "+" : "";
+        return (
+          <span key={m.symbol||i} title={`${m.label} · ${m.source}${m.as_of ? " · "+fmtRelTime(m.as_of) : ""}`}
+                style={{ fontFamily:mono, fontSize:9.5, color:P.ink2, padding:"6px 14px",
+                         borderRight:`1px solid ${P.ruleSoft}`, flexShrink:0 }}>
+            <span style={{ color:P.natt, letterSpacing:".04em" }}>{m.label}</span>
+            {m.value != null && <span style={{ color:P.ink3, marginLeft:6 }}>{fmtTapeValue(m.value)}</span>}
+            <span style={{ color:col, marginLeft:6 }}>{arrow} {sign}{m.pct_change != null ? m.pct_change.toFixed(2) : "—"}%</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── AlmanacScrubber ───────────────────────────────────────────────────────────
 
 function AlmanacScrubber({ asOf, onChange, events }) {
@@ -1326,6 +1365,7 @@ function App() {
   const [geoData, setGeoData]     = useState(null);
   const [convOpen, setConvOpen]   = useState(false);
   const [scrubEvents, setScrubEvents] = useState([]);
+  const [market, setMarket]       = useState([]);
 
   // Load home data whenever asOf changes
   useEffect(() => {
@@ -1356,6 +1396,19 @@ function App() {
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(d => setScrubEvents(d.events || []))
       .catch(() => {});
+  }, []);
+
+  // Load the market tape, then refresh every 5 min
+  useEffect(() => {
+    const load = () => {
+      fetch("/api/market")
+        .then(r => r.ok ? r.json() : Promise.reject(r.status))
+        .then(d => setMarket(d.instruments || []))
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 300000);
+    return () => clearInterval(id);
   }, []);
 
   // ⌘K / Ctrl+K opens conversation
@@ -1391,6 +1444,7 @@ function App() {
     <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column",
                   background:P.bein, color:P.natt, paddingBottom:80 }}>
       <LiveHeader statusData={statusData}/>
+      <MarketTape instruments={market}/>
 
       {/* ── Home ── */}
       {view.name === "home" && (

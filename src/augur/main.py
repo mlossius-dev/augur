@@ -23,6 +23,7 @@ from augur.api.events import router as events_router
 from augur.api.geo import router as geo_router
 from augur.api.health import router as health_router
 from augur.api.home import router as home_router
+from augur.api.market import router as market_router
 from augur.api.reasoning import router as reasoning_router
 from augur.api.scenarios import router as scenarios_router
 from augur.api.status import router as status_router
@@ -114,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(scenarios_router)
     app.include_router(conversation_router)
     app.include_router(events_router)
+    app.include_router(market_router)
 
     # ── Static files (the presentation layer) ─────────────────────────────────
 
