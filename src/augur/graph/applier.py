@@ -787,9 +787,15 @@ class Applier:
             f"$$) AS (v agtype)"
         )
         try:
-            await conn.execute(f"LOAD 'age'")
-            await conn.execute("SET search_path = ag_catalog, \"$user\", public")
-            await conn.execute(cypher)
+            # Savepoint: a failed AGE statement aborts the *current* transaction
+            # in Postgres. Without isolating it, the caught exception would leave
+            # the batch transaction poisoned and the very next write (e.g. the
+            # graph_update_events insert) would fail. The nested transaction rolls
+            # back only the AGE attempt, keeping the Postgres write intact.
+            async with conn.transaction():
+                await conn.execute("LOAD 'age'")
+                await conn.execute("SET search_path = ag_catalog, \"$user\", public")
+                await conn.execute(cypher)
         except Exception as exc:
             # AGE write failure is logged but does not roll back the Postgres write.
             # The graph can be re-synced from the Postgres tables; AGE is a mirror.
@@ -811,9 +817,12 @@ class Applier:
             f"$$) AS (e agtype)"
         )
         try:
-            await conn.execute(f"LOAD 'age'")
-            await conn.execute("SET search_path = ag_catalog, \"$user\", public")
-            await conn.execute(cypher)
+            # Savepoint — see _age_create_vertex: isolate AGE failure so it
+            # cannot poison the batch transaction.
+            async with conn.transaction():
+                await conn.execute("LOAD 'age'")
+                await conn.execute("SET search_path = ag_catalog, \"$user\", public")
+                await conn.execute(cypher)
         except Exception as exc:
             log.error("applier.age_edge_failed", edge_id=str(edge_id), error=str(exc))
 
