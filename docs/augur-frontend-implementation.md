@@ -184,18 +184,20 @@ are presentation decisions, not just code.
 
 Both former gaps (per-topic edge count, change→topic tagging) are now built — see §0. The frontend's keyword-matching stopgap for the causal-thread merge has been removed in favour of real `topic_ids` membership.
 
-### §B — Hard items — operator decisions recorded (2026-06-11)
+### §B — Hard items — all resolved (2026-06-11)
 
-The operator triaged the hard list. Directions chosen:
+Every hard item is now built or consciously closed:
 
-| Item | Decision | Approach |
+| Item | Status | What shipped |
 |---|---|---|
-| **Market data** | **Build properly — the priority.** Curated macro set, not all data. | Extend the existing **free FRED** source (already integrated): keep oil & EUR; add broad-dollar (DTWEXBGS), yen (DEXJPUS), S&P 500 (SP500), VIX (VIXCLS); recommend **S&P 500 + VIX in place of a synthetic "top-10 exchanges" composite**; optionally 10Y (DGS10) + gold. Add a **deterministic %-delta step** so a clean market signal enters the graph instead of feeding bare numbers to prose lenses. **Documents-first:** update `augur-sources.md`. |
-| **Per-dimension editorial note** | **Do it — as a grounded news summary, not editorializing.** | LLM summary of the dimension's *real* 24h changes/signals via a **free OpenRouter model** (zero cost). Grounded → low hallucination. New optional per-dimension `note` field, cached. |
+| **Market data** | **Done.** | A curated macro signal axis from two free providers. `YahooFinanceClient` (public chart endpoint, no key) + expanded FRED cover gold, oil, five FX majors + dollar, the ten largest equity indices, VIX, and US/DE/UK/JP 10y yields. Both clients emit **deterministic %-move statements**; a dedicated **`market` lens** anchors every instrument move (no news thresholds); `GET /api/market` + a header **market tape** surface the live moves. FRED↔Yahoo corroborate overlapping macros. `augur-sources.md` updated. |
+| **Per-dimension editorial note** | **Done.** | Free-tier `DIGEST` stage generates a grounded one-sentence summary of each dimension's real 24h changes; cached in `dimension_notes` (migration `009`) keyed by a change-set hash, regenerated hourly; shown in the domain ledger. Zero cost, no request-path latency. |
 | **Scrubber event markers** | **Done.** | `notable_events` table (migration `008`), `GET /api/events`, scrubber positions markers by real `occurred_at`. |
-| **City-precise "your latitude"** | **Browser geolocation (done), + IP fallback on reject.** | Primary = browser geolocation (asks the user; already shipped). On denial, resolve the request IP to coarse lat/lon → existing `/api/geo/scope`. One dependency to pick: a free IP-geo HTTP service vs a bundled GeoLite2 DB. |
-| **Hyper-local change items** | **Out of scope — replaced, design slot kept.** | The "Your Latitude" local-items slot stays but is filled by the **real region-scoped change list** (`/api/geo/scope` → continental-region-filtered changes; already implemented). No fabricated zip-code/utility specifics. |
-| **Operator chrome** (id/tier/edition/hash) | **Removed — out of scope.** | Already absent from the new frontend; conflicts with `augur-presentation.md` line 106. Not building. |
+| **City-precise "your latitude"** | **Done.** | Browser geolocation (primary, asks the user) → `GET /api/geo/auto` IP fallback on denial (ip-api.com, X-Forwarded-For aware), flagged `approximate`. |
+| **Hyper-local change items** | **Closed — replaced.** | "Your Latitude" slot kept, filled by the **real region-scoped change list** (`/api/geo/scope`). No fabricated zip-code/utility specifics. |
+| **Operator chrome** (id/tier/edition/hash) | **Closed — removed.** | Absent from the build; conflicts with `augur-presentation.md` line 106. Not built. |
+
+**Market-data follow-ups (minor):** FRED↔Yahoo overlap can list an instrument twice on the tape (dedup-by-meaning deferred); a fully LLM-free deterministic market→signal path (vs the current `market` lens) remains the doc-ideal. **Editorial-note caveat:** notes attach to the live view only, not historical `as_of`.
 
 **Note on derived metrics:** rate/acceleration, confidence, and topic attention use **starting-point thresholds** (e.g. share-points/week bands, the 0.33/0.66 confidence cuts). They should be tuned once real signal volume exists; the methods live in the modules cited in §0.
 
