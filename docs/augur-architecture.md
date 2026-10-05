@@ -349,6 +349,8 @@ The views:
 
 Every view exposes the time column Discourse needs to read it `as_of` a past moment, consistent with replay mode below.
 
+Note on placement: Core's migration runner sets `search_path = ag_catalog, "$user", public` (needed for AGE), so Core's own tables are created in the `ag_catalog` schema rather than `public`. The bridge views name tables unqualified and therefore bind to them wherever they are. Moving Core's tables out of `ag_catalog` is a separate decision; the views would need re-creating if that happens.
+
 **Contract discipline.** Adding a column to a view is backward-compatible. Renaming or removing a column, changing its type, or changing what a view means is a breaking change: it needs a matching change in Discourse's bridge reader, whose contract tests fail loudly on any drift. The migration is idempotent (`CREATE OR REPLACE VIEW`), because Core's migration runner re-applies migrations that do not record themselves.
 
 #### Design decision: views in the same instance, not an API
