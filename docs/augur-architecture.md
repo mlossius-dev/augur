@@ -15,6 +15,7 @@ Cross-references:
 - Pipeline stage internals → `augur-signal-pipeline.md`
 - Build sequence → `augur-roadmap.md`
 - Signal-extraction subsystem → `augur-signal-pipeline.md`
+- Sibling system Augur Discourse and the `core_bridge` contract → "Sibling systems" below
 
 ---
 
@@ -319,6 +320,44 @@ A single-operator system needs strong introspection. The architecture commits to
 - **A "why does Augur think this?" trace** available for any node or edge: list of supporting signals, list of source payloads, list of disconfirmation passes that examined it, current weight and weight history. Where the supporting reasoning involved an LLM call, the trace links to the corresponding Langfuse trace.
 
 The architectural commitment is that Augur does not reimplement what Langfuse already does well. The application owns the *what* (signals, events, graph state) and Langfuse owns the *how* (LLM call history, prompt versions, cost analytics, latency distributions). The two are linked by trace IDs stored as columns on application records.
+
+---
+
+## Sibling systems
+
+Augur Discourse (`mlossius-dev/augur-discourse`) is a sibling system: it measures what is being talked about across platforms and sets that against what Core models as happening. It runs on the same VPS and the same PostgreSQL instance, in its own `discourse` schema, as its own database role. Its design is in that repository's `docs/discourse-vision.md`.
+
+The relationship is a **one-way, read-only bridge**:
+
+- Core publishes a schema, `core_bridge`, that contains **views only** (migration `010_core_bridge.sql`). The views are a published contract: Discourse reads them, and only them.
+- The `discourse` role has `USAGE` on `core_bridge` and `SELECT` on its views. It has no grant on any other Core object. The views run with their owner's rights, so Discourse never needs, and never gets, access to the tables behind them.
+- **Core never reads Discourse.** Nothing Discourse produces enters the signal pipeline, Tier A, or the graph. The social-media exclusion in `augur-sources.md` is unchanged: Discourse's material is exactly the non-independent echo that Tier A's convergence detection must never see.
+
+The views:
+
+| View | Contents | Time column for `as_of` |
+|---|---|---|
+| `aliases` | `alias_text`, `canonical_name`, `canonical_node_id` | `added_at` |
+| `topics` | `topic_id`, `name`, `description`, `dimension` | `created_at` |
+| `topic_nodes` | `topic_id`, `node_id`, `node_type`, `node_name` | `added_at` |
+| `events` | event nodes: `node_id`, `name`, `occurred_at`, `event_kind`, `subject_entities`, `occurred_location` | `occurred_at` |
+| `condition_history` | condition state transitions with node name | `content_timestamp` |
+| `quantity_series` | market and macro series normalized to `series_key`, `label`, `unit`, `ts`, `value` (from FRED and Yahoo payload metadata) | `ts` |
+| `edges_summary` | live edges: source, target, names, `edge_type`, `current_weight_band` | `created_at` |
+| `edge_weight_history` | weight-band changes per edge | `content_timestamp` |
+| `payload_index` | news payload metadata only: source, perspective, language, title, url | `content_timestamp` |
+
+Every view exposes the time column Discourse needs to read it `as_of` a past moment, consistent with replay mode below.
+
+**Contract discipline.** Adding a column to a view is backward-compatible. Renaming or removing a column, changing its type, or changing what a view means is a breaking change: it needs a matching change in Discourse's bridge reader, whose contract tests fail loudly on any drift. The migration is idempotent (`CREATE OR REPLACE VIEW`), because Core's migration runner re-applies migrations that do not record themselves.
+
+#### Design decision: views in the same instance, not an API
+
+The alternative considered was a small read-only HTTP API in front of Core for Discourse to call.
+
+**Current decision: views in a dedicated schema.** No new service, no network failure modes, and `as_of` filtering is plain SQL. The permission boundary is enforced by PostgreSQL grants and tested from the Discourse side.
+
+**Revisit trigger:** Discourse load measurably degrades Core (query latency, disk, vacuum pressure). Then Discourse moves to its own database, and these views become the specification for a read-only API.
 
 ---
 

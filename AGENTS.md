@@ -45,6 +45,7 @@ These are not flexible. Do not propose changing them without an explicit convers
 - **The graph schema is fixed.** Six node types, nine edge types, five weight bands plus `disputed`. Adding any of these requires a schema revision conversation, not a code change.
 - **The `falsification_criteria` field is required on every edge.** The applier must reject edges without it.
 - **One PostgreSQL database for everything.** With pgvector, pg_trgm, PostGIS, and Apache AGE extensions. Do not introduce Neo4j, Pinecone, Qdrant, or other databases without explicit revision of `docs/augur-architecture.md`.
+- **`core_bridge` is a published contract with Augur Discourse.** Its views are read by a sibling system. Do not rename, remove or retype a view column without a matching Discourse change, and never make Core read anything Discourse writes. See `docs/augur-architecture.md`, "Sibling systems".
 
 If a piece of code you're writing would violate any of these, stop and surface the issue.
 
