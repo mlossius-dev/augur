@@ -54,9 +54,9 @@ class ProjectionOrchestrator:
             stage=PipelineStage.PROJECTION,
             prompt_template_id="scenario_generation_v1",
             messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            system=SYSTEM_PROMPT,
             metadata={
                 "dimension": dimension or "all",
                 "n_conditions": len(evidence.active_conditions),
