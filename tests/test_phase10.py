@@ -419,10 +419,19 @@ class TestBuildUserMessage:
 
 
 class TestProjectionOrchestrator:
-    def _make_orch(self, llm_response_content):
+    _CONDITION = {
+        "node_id": "00000000-0000-0000-0000-000000000001",
+        "name": "Credit market stress",
+        "description": "Rising defaults in bank lending",
+        "current_state": "active",
+    }
+
+    def _make_orch(self, llm_response_content, *, conditions=None):
         from augur.projection.orchestrator import ProjectionOrchestrator
 
-        pool, conn = _make_pool([], [], [])  # empty graph
+        # One active condition, so there is evidence to project from
+        rows = [self._CONDITION] if conditions is None else conditions
+        pool, conn = _make_pool(rows, [], [])
 
         llm = MagicMock()
         mock_response = MagicMock()
@@ -446,6 +455,13 @@ class TestProjectionOrchestrator:
         assert result.dimension == "economic_stability"
         assert len(result.scenarios) == 1
         assert result.model_used == "test-model"
+
+    @pytest.mark.asyncio
+    async def test_no_evidence_makes_no_llm_call(self):
+        orch, _ = self._make_orch("[]", conditions=[])
+        result = await orch.run_projection(dimension="economic_stability", save=False)
+        assert result.scenarios == []
+        orch._llm.complete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalid_dimension_raises(self):

@@ -31,9 +31,9 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
             """
             SELECT
                 COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE fetched_at > now() - interval '24 hours') AS last_24h,
-                COUNT(*) FILTER (WHERE fetched_at > now() - interval '4 hours') AS last_4h,
-                COUNT(*) FILTER (WHERE fetched_at > now() - interval '1 hour') AS last_hour,
+                COUNT(*) FILTER (WHERE extracted_at > now() - interval '24 hours') AS last_24h,
+                COUNT(*) FILTER (WHERE extracted_at > now() - interval '4 hours') AS last_4h,
+                COUNT(*) FILTER (WHERE extracted_at > now() - interval '1 hour') AS last_hour,
                 COUNT(*) FILTER (WHERE cluster_id IS NULL) AS unclustered,
                 COUNT(*) FILTER (WHERE cluster_id IS NOT NULL) AS clustered
             FROM signals
@@ -44,10 +44,11 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         graph_row = await conn.fetchrow(
             """
             SELECT
-                (SELECT COUNT(*) FROM nodes WHERE NOT deprecated) AS live_nodes,
-                (SELECT COUNT(*) FROM nodes WHERE deprecated) AS deprecated_nodes,
+                -- Nodes are never deprecated (the schema has no such column); edges are
+                (SELECT COUNT(*) FROM nodes) AS live_nodes,
+                0 AS deprecated_nodes,
                 (SELECT COUNT(*) FROM nodes
-                   WHERE NOT deprecated AND created_at > now() - interval '24 hours') AS nodes_24h,
+                   WHERE created_at > now() - interval '24 hours') AS nodes_24h,
                 (SELECT COUNT(*) FROM edges WHERE NOT deprecated) AS live_edges,
                 (SELECT COUNT(*) FROM edges WHERE deprecated) AS deprecated_edges,
                 (SELECT COUNT(*) FROM edges
@@ -60,36 +61,9 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         # Anchoring backlog: unanchored signals older than 1 hour
         anchoring_backlog = await conn.fetchval(
             """
-            SELECT COUNT(*)
-            FROM signals s
-            LEFT JOIN graph_update_events gue
-                ON $1 = ANY(gue.triggered_by) AND gue.rejected = FALSE
-                AND gue.target_edge_id IS NOT NULL
-            WHERE gue.target_edge_id IS NULL
-              AND s.fetched_at < now() - interval '1 hour'
-            """,
-            # Pass a dummy signal_id-like reference; this is a correlated subquery
-            # but asyncpg needs a param. Rewrite as a plain query.
-            None,
-        ) if False else await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM signals s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM graph_update_events gue
-                WHERE $1 = ANY(gue.triggered_by)
-                  AND gue.rejected = FALSE
-            )
-            AND s.fetched_at < now() - interval '1 hour'
-            AND s.cluster_id IS NULL
-            """,
-            # placeholder — real query below
-            None,
-        ) if False else await conn.fetchval(
-            """
             SELECT COUNT(*) FROM signals
-            WHERE cluster_id IS NULL
-              AND fetched_at < now() - interval '1 hour'
+            WHERE NOT anchored
+              AND extracted_at < now() - interval '1 hour'
             """
         )
 
@@ -184,19 +158,34 @@ async def get_anchoring_quality(
     Shows applied/rejected counts per batch to help spot anchoring regressions.
     """
     async with pool.acquire() as conn:
+        # The Applier writes a batch in one transaction, so its events share
+        # applied_at (now() is the transaction start); that and the source
+        # identify a batch.  Lenses come from the signals that triggered it.
         rows = await conn.fetch(
             """
-            SELECT
-                batch_id,
-                COUNT(*) AS n_events,
-                COUNT(*) FILTER (WHERE NOT rejected) AS n_applied,
-                COUNT(*) FILTER (WHERE rejected) AS n_rejected,
-                MIN(applied_at) AS batch_start,
-                array_agg(DISTINCT lens_id) AS lenses
-            FROM graph_update_events
-            WHERE applied_at > now() - interval '7 days'
-            GROUP BY batch_id
-            ORDER BY batch_start DESC
+            WITH ev AS (
+                SELECT * FROM graph_update_events
+                WHERE applied_at > now() - interval '7 days'
+            ),
+            batches AS (
+                SELECT applied_at, source,
+                       COUNT(*) AS n_events,
+                       COUNT(*) FILTER (WHERE NOT rejected) AS n_applied,
+                       COUNT(*) FILTER (WHERE rejected) AS n_rejected
+                FROM ev
+                GROUP BY applied_at, source
+            ),
+            lenses AS (
+                SELECT ev.applied_at, ev.source, array_agg(DISTINCT s.lens_id) AS lenses
+                FROM ev
+                CROSS JOIN LATERAL unnest(ev.triggered_by) AS t(signal_id)
+                JOIN signals s ON s.signal_id = t.signal_id
+                GROUP BY ev.applied_at, ev.source
+            )
+            SELECT b.*, l.lenses
+            FROM batches b
+            LEFT JOIN lenses l USING (applied_at, source)
+            ORDER BY b.applied_at DESC
             LIMIT $1
             """,
             limit,
@@ -204,12 +193,12 @@ async def get_anchoring_quality(
 
     return [
         {
-            "batch_id": str(r["batch_id"]),
+            "batch_id": f"{r['source']}@{r['applied_at'].isoformat()}",
             "n_events": r["n_events"],
             "n_applied": r["n_applied"],
             "n_rejected": r["n_rejected"],
             "rejection_rate": round(r["n_rejected"] / r["n_events"], 3) if r["n_events"] else 0.0,
-            "batch_start": r["batch_start"].isoformat() if r["batch_start"] else None,
+            "batch_start": r["applied_at"].isoformat(),
             "lenses": list(r["lenses"] or []),
         }
         for r in rows
@@ -233,7 +222,7 @@ async def get_signal_flow(
             """
             SELECT lens_id, COUNT(*) AS cnt
             FROM signals
-            WHERE fetched_at >= $1
+            WHERE extracted_at >= $1
             GROUP BY lens_id
             ORDER BY cnt DESC
             """,
@@ -241,14 +230,14 @@ async def get_signal_flow(
         )
 
         total = await conn.fetchval(
-            "SELECT COUNT(*) FROM signals WHERE fetched_at >= $1",
+            "SELECT COUNT(*) FROM signals WHERE extracted_at >= $1",
             cutoff,
         )
 
         deduped = await conn.fetchval(
             """
             SELECT COUNT(DISTINCT cluster_id) FROM signals
-            WHERE fetched_at >= $1 AND cluster_id IS NOT NULL
+            WHERE extracted_at >= $1 AND cluster_id IS NOT NULL
             """,
             cutoff,
         )

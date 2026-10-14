@@ -16,8 +16,11 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -e ".[dev]"
 
-# Copy application source
+# Copy application source, the source registry and the presentation layer
+# (both resolved relative to the package, outside src/)
 COPY src/ src/
+COPY config/ config/
+COPY static/ static/
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

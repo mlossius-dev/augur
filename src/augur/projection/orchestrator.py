@@ -48,15 +48,29 @@ class ProjectionOrchestrator:
 
         evidence = await gather_evidence(self._pool, dimension=dimension, as_of=as_of)
 
+        # Projection walks outward from active conditions (docs/augur-roadmap.md,
+        # Phase 10). With none and no edges there is nothing to walk from, and a
+        # model asked anyway invents scenarios from its own priors.
+        if not evidence.active_conditions and not evidence.strong_edges:
+            log.info("projection.no_evidence", dimension=dimension)
+            return ProjectionResult(
+                dimension=dimension,
+                scenarios=[],
+                n_conditions_used=0,
+                n_edges_used=0,
+                model_used="",
+                as_of=(as_of or datetime.now()).isoformat(),
+            )
+
         user_msg = build_user_message(evidence, dimension_label=dimension_label)
 
         response = await self._llm.complete(
             stage=PipelineStage.PROJECTION,
             prompt_template_id="scenario_generation_v1",
             messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            system=SYSTEM_PROMPT,
             metadata={
                 "dimension": dimension or "all",
                 "n_conditions": len(evidence.active_conditions),

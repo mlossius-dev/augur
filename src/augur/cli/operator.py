@@ -20,6 +20,7 @@ from typing import Annotated
 
 import typer
 
+from augur.config import get_settings
 from augur.logging import configure_logging
 
 app = typer.Typer(

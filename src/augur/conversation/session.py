@@ -5,6 +5,7 @@ load history, prune stale sessions.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -20,8 +21,9 @@ async def create_session(pool: asyncpg.Pool, *, metadata: dict | None = None) ->
     """Create a new conversation session. Returns session_id."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "INSERT INTO conversation_sessions (metadata) VALUES ($1) RETURNING session_id",
-            metadata or {},
+            # asyncpg has no JSONB codec on this pool: pass the JSON text
+            "INSERT INTO conversation_sessions (metadata) VALUES ($1::jsonb) RETURNING session_id",
+            json.dumps(metadata or {}),
         )
     return str(row["session_id"])
 

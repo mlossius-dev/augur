@@ -104,7 +104,7 @@ async def retrieve_context(
         signal_rows = []
         if node_rows:
             name_terms = [r["name"][:30] for r in node_rows[:5]]
-            like_expr = " OR ".join(f"s.claim_text ILIKE $${i + 3}" for i, _ in enumerate(name_terms))
+            like_expr = " OR ".join(f"s.claim_text ILIKE ${i + 3}" for i, _ in enumerate(name_terms))
             if like_expr:
                 params = [signal_window, cutoff] + [f"%{t}%" for t in name_terms]
                 signal_rows = await conn.fetch(

@@ -48,6 +48,13 @@ function stateTitle(s) {
   return (s && m[s.toLowerCase()]) || "Unknown";
 }
 
+// A condition node's current_state (docs/augur-graph-schema.md), not a dimension band
+function conditionStateTitle(s) {
+  const m = { active:"Active", inactive:"Inactive", partially_active:"Partially active",
+              disputed:"Disputed", unknown:"Unknown" };
+  return (s && m[s.toLowerCase()]) || "Unknown";
+}
+
 function dirGlyph(d) {
   return { improving:"↗", steady:"→", worsening:"↘", unknown:"—" }[d] || "→";
 }
@@ -1054,7 +1061,7 @@ function TopicDetailView({ topicId, onBack, onNodeSelect, onEdgeSelect, asOf }) 
         {n.current_state != null && (
           <span className={`state-${n.current_state}`}
                 style={{ fontFamily:mono, fontSize:9, letterSpacing:".08em" }}>
-            {stateTitle(n.current_state)}
+            {conditionStateTitle(n.current_state)}
           </span>
         )}
         <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".08em", color:P.ink4 }}>
@@ -1456,7 +1463,8 @@ function App() {
   const dims    = homeData ? homeData.dimensions.map(adaptDim)    : null;
   const changes = homeData ? homeData.changes.map(adaptChange)    : null;
 
-  const navigate = (name, params = {}) => setView({ name, ...params });
+  // A new view starts at its top; otherwise it opens wherever the page was scrolled
+  const navigate = (name, params = {}) => { setView({ name, ...params }); window.scrollTo(0, 0); };
 
   return (
     <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column",

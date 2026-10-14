@@ -67,8 +67,9 @@ async def save_scenarios(
                     s.key_condition_ids or [],
                     s.supporting_edge_ids or [],
                     s.contradicting_edge_ids or [],
-                    s.generated_at,
-                    s.as_of,
+                    # Scenario carries ISO strings; asyncpg binds timestamptz from datetime
+                    datetime.fromisoformat(s.generated_at),
+                    datetime.fromisoformat(s.as_of),
                     s.model_used,
                 )
                 for s in scenarios

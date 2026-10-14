@@ -83,8 +83,7 @@ class ConversationOrchestrator:
         response = await self._llm.complete(
             stage=PipelineStage.CONVERSATION,
             prompt_template_id="conversation_v1",
-            messages=messages,
-            system=SYSTEM_PROMPT,
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}, *messages],
             metadata={
                 "session_id": session_id,
                 "n_nodes": len(ctx.matched_nodes),
