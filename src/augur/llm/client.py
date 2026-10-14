@@ -60,6 +60,7 @@ from augur.llm.call_log import CallLog, LLMCallEnd, LLMCallStart, PostgresCallLo
 from augur.llm.models import (
     DEFAULT_MODEL_ROUTING,
     FREE_TIER_STAGES,
+    ModelChain,
     PipelineStage,
     routing_from_overrides,
 )
@@ -73,6 +74,15 @@ class LLMBudgetExceededError(Exception):
 
 class LLMQuotaExceededError(LLMBudgetExceededError):
     """Raised when the daily LLM call quota has been reached."""
+
+
+def _extra_body(chain: ModelChain, trace: dict[str, Any]) -> dict[str, Any]:
+    """OpenRouter-specific request fields: cost reporting, trace, fallbacks."""
+    body: dict[str, Any] = {"usage": {"include": True}, "trace": trace}
+    if len(chain) > 1:
+        # One request; OpenRouter moves down the list when a model errors
+        body["models"] = list(chain)
+    return body
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -138,7 +148,7 @@ class LLMClient:
         daily_budget_usd: Decimal,
         call_log: CallLog,
         environment: str = "development",
-        model_routing: dict[PipelineStage, str] | None = None,
+        model_routing: dict[PipelineStage, ModelChain] | None = None,
         daily_call_limit: int | None = None,
         calls_per_minute: int | None = None,
     ) -> None:
@@ -196,6 +206,11 @@ class LLMClient:
         )
 
     def model_for_stage(self, stage: PipelineStage) -> str:
+        """The stage's primary model."""
+        return self._model_routing[stage][0]
+
+    def models_for_stage(self, stage: PipelineStage) -> ModelChain:
+        """The stage's models in priority order: the primary, then fallbacks."""
         return self._model_routing[stage]
 
     async def complete(
@@ -240,7 +255,8 @@ class LLMClient:
                     "The budget resets at midnight UTC."
                 )
 
-        model = self.model_for_stage(stage)
+        chain = self.models_for_stage(stage)
+        model = chain[0]
         client = self._free_client if is_free_tier else self._main_client
         call_id = uuid.uuid4()
         metadata = metadata or {}
@@ -253,7 +269,8 @@ class LLMClient:
                     call_id=call_id,
                     stage=str(stage),
                     prompt_template_id=prompt_template_id,
-                    model=model,
+                    # The whole chain until the call finishes; then the model that answered
+                    model=",".join(chain),
                     is_free_tier=is_free_tier,
                     temperature=temperature,
                     metadata=metadata,
@@ -281,7 +298,7 @@ class LLMClient:
                     model=model,
                     messages=messages,  # type: ignore[arg-type]
                     temperature=temperature,
-                    extra_body={"usage": {"include": True}, "trace": trace},
+                    extra_body=_extra_body(chain, trace),
                 )
                 break
             except Exception as exc:

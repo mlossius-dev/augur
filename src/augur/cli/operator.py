@@ -210,7 +210,7 @@ async def _llm_test_async(stage_str: str, prompt: str) -> None:
 
     await init_db(settings)
     client = LLMClient.from_settings(settings)
-    typer.echo(f"Calling OpenRouter stage={stage} model={client.model_for_stage(stage)} …")
+    typer.echo(f"Calling OpenRouter stage={stage} models={','.join(client.models_for_stage(stage))} …")
 
     try:
         response = await client.complete(
