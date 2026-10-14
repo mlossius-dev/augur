@@ -1392,7 +1392,7 @@ function App() {
       .catch(err => setHomeError(String(err)));
   }, [asOf]);
 
-  // Load /api/status once then poll every 30s
+  // Load /api/status once, then every 5 min: the pipeline it reports on runs hourly
   useEffect(() => {
     const load = () => {
       fetch("/api/status")
@@ -1401,7 +1401,7 @@ function App() {
         .catch(() => {});
     };
     load();
-    const id = setInterval(load, 30000);
+    const id = setInterval(load, 300000);
     return () => clearInterval(id);
   }, []);
 
