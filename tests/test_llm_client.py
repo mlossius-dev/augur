@@ -110,7 +110,7 @@ class TestModelRouting:
         from augur.llm.models import DEFAULT_MODEL_ROUTING, is_free_model
 
         for stage in PipelineStage:
-            assert is_free_model(DEFAULT_MODEL_ROUTING[stage]), stage
+            assert all(is_free_model(m) for m in DEFAULT_MODEL_ROUTING[stage]), stage
 
     def test_overrides_replace_only_the_stages_they_name(self) -> None:
         from augur.llm.models import DEFAULT_MODEL_ROUTING, routing_from_overrides
@@ -118,8 +118,20 @@ class TestModelRouting:
         routing = routing_from_overrides(
             {PipelineStage.ANCHORING: "vendor/model:free", PipelineStage.EXTRACTION: ""}
         )
-        assert routing[PipelineStage.ANCHORING] == "vendor/model:free"
+        assert routing[PipelineStage.ANCHORING] == ("vendor/model:free",)
         assert routing[PipelineStage.EXTRACTION] == DEFAULT_MODEL_ROUTING[PipelineStage.EXTRACTION]
+
+    def test_an_override_can_be_a_fallback_chain(self) -> None:
+        from augur.llm.models import routing_from_overrides
+
+        routing = routing_from_overrides(
+            {PipelineStage.ANCHORING: " vendor/a:free , vendor/b:free,,openrouter/free "}
+        )
+        assert routing[PipelineStage.ANCHORING] == (
+            "vendor/a:free",
+            "vendor/b:free",
+            "openrouter/free",
+        )
 
     def test_overrides_are_read_from_settings(self, minimal_env, monkeypatch) -> None:
         from augur.config import get_settings
@@ -266,6 +278,37 @@ class TestCallRecording:
         start, end, _ = client._call_log.calls[UUID(response.call_id)]
         assert start.model == "openrouter/free"
         assert end.model == response.model == "vendor/picked-by-router:free"
+
+    @pytest.mark.asyncio
+    async def test_a_single_model_sends_no_fallback_list(self, client) -> None:
+        main_create, _ = _stub(client)
+        await _complete(client)
+
+        kwargs = main_create.call_args.kwargs
+        assert kwargs["model"] == "openrouter/free"
+        assert "models" not in kwargs["extra_body"]
+
+    @pytest.mark.asyncio
+    async def test_a_chain_is_one_request_with_openrouter_fallbacks(self, llm_client_kwargs) -> None:
+        from augur.llm.client import LLMClient
+
+        chain = ("vendor/a:free", "vendor/b:free", "openrouter/free")
+        client = LLMClient(
+            **llm_client_kwargs, model_routing={stage: chain for stage in PipelineStage}
+        )
+        answered = _completion()
+        answered.model = "vendor/b:free"
+        main_create, _ = _stub(client, main=AsyncMock(return_value=answered))
+
+        response = await _complete(client)
+
+        assert main_create.call_count == 1
+        kwargs = main_create.call_args.kwargs
+        assert kwargs["model"] == "vendor/a:free"
+        assert kwargs["extra_body"]["models"] == list(chain)
+        start, end, _ = client._call_log.calls[UUID(response.call_id)]
+        assert start.model == "vendor/a:free,vendor/b:free,openrouter/free"
+        assert end.model == response.model == "vendor/b:free"
 
     def test_sdk_retries_are_disabled(self, client) -> None:
         assert client._main_client.max_retries == 0

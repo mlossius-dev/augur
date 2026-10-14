@@ -2,8 +2,11 @@
 Model routing configuration.
 
 Maps pipeline stages to OpenRouter model identifiers.  All model selection
-is runtime configuration: override a stage with AUGUR_MODEL_<STAGE>
-(e.g. AUGUR_MODEL_EXTRACTION=<vendor>/<model>:free).
+is runtime configuration: override a stage with AUGUR_MODEL_<STAGE>, set to
+one model or a comma-separated fallback chain
+(e.g. AUGUR_MODEL_EXTRACTION=<vendor>/<a>:free,<vendor>/<b>:free,openrouter/free).
+A chain goes to OpenRouter as one request with its `models` parameter: if the
+first model errors, OpenRouter tries the next.
 
 Every stage defaults to OpenRouter's free models router (`openrouter/free`),
 which picks an available free model per request.  This is an operator
@@ -39,9 +42,12 @@ class PipelineStage(StrEnum):
 
 FREE_MODELS_ROUTER = "openrouter/free"
 
+# A stage's models in priority order; the first is the primary.
+type ModelChain = tuple[str, ...]
+
 # Default model routing table.  Override per stage with AUGUR_MODEL_<STAGE>.
-DEFAULT_MODEL_ROUTING: dict[PipelineStage, str] = {
-    stage: FREE_MODELS_ROUTER for stage in PipelineStage
+DEFAULT_MODEL_ROUTING: dict[PipelineStage, ModelChain] = {
+    stage: (FREE_MODELS_ROUTER,) for stage in PipelineStage
 }
 
 
@@ -50,10 +56,19 @@ def is_free_model(model: str) -> bool:
     return model == FREE_MODELS_ROUTER or model.endswith(":free")
 
 
-def routing_from_overrides(overrides: dict[PipelineStage, str]) -> dict[PipelineStage, str]:
+def parse_model_chain(value: str) -> ModelChain:
+    """`a,b,c` → ("a", "b", "c"); blanks and surrounding spaces are dropped."""
+    return tuple(model.strip() for model in value.split(",") if model.strip())
+
+
+def routing_from_overrides(
+    overrides: dict[PipelineStage, str],
+) -> dict[PipelineStage, ModelChain]:
     """The default routing with each non-empty override applied."""
     routing = dict(DEFAULT_MODEL_ROUTING)
-    routing.update({stage: model for stage, model in overrides.items() if model})
+    for stage, value in overrides.items():
+        if chain := parse_model_chain(value):
+            routing[stage] = chain
     return routing
 
 
