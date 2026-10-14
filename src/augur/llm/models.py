@@ -3,7 +3,7 @@ Model routing configuration.
 
 Maps pipeline stages to OpenRouter model identifiers.  All model selection
 is runtime configuration: override a stage with AUGUR_MODEL_<STAGE>
-(e.g. AUGUR_MODEL_EXTRACTION=deepseek/deepseek-chat-v3.1:free).
+(e.g. AUGUR_MODEL_EXTRACTION=<vendor>/<model>:free).
 
 Every stage defaults to OpenRouter's free models router (`openrouter/free`),
 which picks an available free model per request.  This is an operator
