@@ -142,7 +142,7 @@ The reasoning view for any node or edge shows:
 - **The falsification criteria** — what evidence would weaken this edge.
 - **Weight history** — a time series showing how the weight has changed over time, with annotations on what caused each change.
 - **Connected nodes and edges** — a small focused subgraph showing the immediate neighborhood, navigable by clicking outward.
-- **The Langfuse trace** — for operators or trusted collaborators, a link to the LLM call that produced the anchoring. Hidden from regular users.
+- **The LLM call** — for operators or trusted collaborators, the recorded `llm_calls` entry (input, output, model, cost) that produced the anchoring. Hidden from regular users.
 
 The reasoning view is dense. It is meant to be read carefully, not scanned. It is also the view that satisfies the vision document's transparency principle most directly — every claim is one or two clicks from its supporting evidence.
 

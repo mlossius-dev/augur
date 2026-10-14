@@ -40,7 +40,7 @@ These are not flexible. Do not propose changing them without an explicit convers
 
 - **No LLM ever writes directly to the graph.** The applier is plain Python code. LLMs propose structured anchors; the applier validates and applies them. This is not a code-organization preference; it's a safety architecture.
 - **All LLM inference is external via OpenRouter.** The VPS never runs models locally. Do not introduce local-inference dependencies.
-- **Every LLM call emits a Langfuse trace.** No silent calls. The trace must include the prompt template ID, model, stage tag, and any relevant signal/event IDs.
+- **Every LLM call is recorded in `llm_calls`.** No silent calls. The record must include the prompt template ID, model, stage tag, and any relevant signal/event IDs (pass them as `metadata`). The client writes the row before calling OpenRouter; if it cannot, the call is not made.
 - **Replay mode is first-class.** Every signal, event, and graph update carries a `content_timestamp` that is the time the content represents, not the processing time. Do not introduce code that uses `now()` where it should use `content_timestamp`.
 - **The graph schema is fixed.** Six node types, nine edge types, five weight bands plus `disputed`. Adding any of these requires a schema revision conversation, not a code change.
 - **The `falsification_criteria` field is required on every edge.** The applier must reject edges without it.
@@ -64,15 +64,15 @@ If a piece of code you're writing would violate any of these, stop and surface t
 ### Naming
 
 - Use the vocabulary from the documents exactly. A signal is a `Signal`, not a `Claim` or `Observation`. An edge is an `Edge`, not a `Relationship`. The applier is the `Applier`, not the `Writer` or `Updater`. The documents define the vocabulary; code matches it.
-- Use snake_case for Python, camelCase only where matching external APIs (Langfuse, OpenRouter, etc.).
+- Use snake_case for Python, camelCase only where matching external APIs (OpenRouter, etc.).
 - Module-level constants in SCREAMING_SNAKE_CASE.
 - Database table names match the document vocabulary: `signals`, `payloads`, `nodes`, `edges`, `edge_weight_history`, `graph_update_events`, etc.
 
 ### Logging and observability
 
 - **Structured logging only.** Use `structlog` or equivalent. Every log line should have a stage tag and the relevant entity IDs (payload_id, signal_id, event_id, etc.).
-- **Langfuse traces for every LLM call.** Never call OpenRouter directly; go through the LLM client abstraction. The abstraction emits the trace.
-- **Cost tracking at the call site for budget enforcement only.** Analytical cost dashboards live in Langfuse, not in application code or tables.
+- **Every LLM call goes through the LLM client abstraction.** Never call OpenRouter directly; the abstraction records the call in `llm_calls`, requests the real cost from OpenRouter and enforces the daily budget.
+- **Cost and call analysis is SQL over `llm_calls`.** Use `augur llm-calls --summary` or a query; do not add parallel cost tables or a second observability service without revising `docs/augur-architecture.md`.
 
 ### Testing
 
@@ -203,7 +203,7 @@ These are documented in `docs/augur-roadmap.md` "Failure modes to watch for." Th
 - **Docker Compose** orchestrates the local and VPS environments.
 - **Postgres 16+** with pgvector, pg_trgm, PostGIS, and Apache AGE extensions.
 - **SearXNG** for general web search (existing instance on the VPS).
-- **Langfuse** for LLM observability (existing instance on the VPS).
+- **`llm_calls`** (in Postgres) for LLM observability; OpenRouter Broadcast optionally on top.
 - **OpenRouter** for all LLM inference. Two API keys: one for production-quality models on the main pipeline, one free-tier-only for the conversation layer.
 - **Object storage** (Hetzner or Backblaze B2) for backups.
 

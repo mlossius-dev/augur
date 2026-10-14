@@ -13,6 +13,8 @@ from decimal import Decimal
 
 import pytest
 
+from augur.llm.call_log import InMemoryCallLog
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "integration: marks tests that require real infra")
@@ -27,9 +29,6 @@ def minimal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://augur:test@localhost:5432/augur_test")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test-main")
     monkeypatch.setenv("OPENROUTER_FREE_TIER_API_KEY", "sk-or-v1-test-free")
-    monkeypatch.setenv("LANGFUSE_HOST", "http://localhost:3000")
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
 
 
 # ── LLM client fixtures ───────────────────────────────────────────────────────
@@ -42,10 +41,8 @@ def llm_client_kwargs() -> dict:
         openrouter_api_key="sk-or-v1-test-main",
         openrouter_free_tier_api_key="sk-or-v1-test-free",
         openrouter_base_url="https://openrouter.ai/api/v1",
-        langfuse_host="http://localhost:3000",
-        langfuse_public_key="pk-lf-test",
-        langfuse_secret_key="sk-lf-test",
         daily_budget_usd=Decimal("5.00"),
+        call_log=InMemoryCallLog(),
     )
 
 

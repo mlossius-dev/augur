@@ -48,7 +48,6 @@ Prerequisites:
 
 - A Linux server (current target: Hetzner VPS) with Docker and Docker Compose installed.
 - A SearXNG instance accessible to the application (currently running on the same VPS).
-- A Langfuse instance for LLM observability (currently running on the same VPS).
 - An OpenRouter API key for production model access.
 - A second OpenRouter API key restricted to free-tier models, reserved for the conversation layer.
 - Object storage (Hetzner Object Storage or Backblaze B2 recommended) for off-host backups.

@@ -65,7 +65,7 @@ class EdgeChallengeResult:
     n_operations_applied: int = 0
     n_operations_rejected: int = 0
     llm_error: str | None = None
-    langfuse_trace_id: str | None = None
+    llm_call_id: str | None = None
 
 
 @dataclass
@@ -209,7 +209,7 @@ class DisconfirmationOrchestrator:
             await self._record_pass_event(edge, er, signal_ids, None)
             return er
 
-        er.langfuse_trace_id = response.langfuse_trace_id
+        er.llm_call_id = response.call_id
 
         # Parse output
         parsed = parse_challenge_output(response.content, edge_id=str(edge_id))
@@ -225,13 +225,13 @@ class DisconfirmationOrchestrator:
                     content_timestamp=datetime.now(timezone.utc),
                     source="disconfirmation",
                     triggered_by=signal_ids[:10],  # asyncpg accepts list of UUIDs
-                    langfuse_trace_ids=[response.langfuse_trace_id],
+                    llm_call_ids=[response.call_id],
                 )
                 er.n_operations_applied = len(applier_result.applied)
                 er.n_operations_rejected = len(applier_result.rejected)
 
         # Record the pass event and update last_disconfirmation_pass
-        await self._record_pass_event(edge, er, signal_ids, response.langfuse_trace_id)
+        await self._record_pass_event(edge, er, signal_ids, response.call_id)
         await self._mark_challenged(edge_id)
 
         log.info(
@@ -247,7 +247,7 @@ class DisconfirmationOrchestrator:
         edge: dict[str, Any],
         result: EdgeChallengeResult,
         signal_ids: list[UUID],
-        trace_id: str | None,
+        llm_call_id: str | None,
     ) -> None:
         """Insert a disconfirmation_pass_events record."""
         async with self._pool.acquire() as conn:
@@ -256,7 +256,7 @@ class DisconfirmationOrchestrator:
                     """
                     INSERT INTO disconfirmation_pass_events
                         (pass_event_id, edge_id, challenged_at, outcome,
-                         reasoning, signals_reviewed, langfuse_trace_id,
+                         reasoning, signals_reviewed, llm_call_id,
                          weight_band_at_challenge)
                     VALUES ($1, $2, now(), $3, $4, $5, $6, $7)
                     """,
@@ -265,7 +265,7 @@ class DisconfirmationOrchestrator:
                     result.outcome,
                     result.reasoning,
                     signal_ids,
-                    trace_id,
+                    llm_call_id,
                     str(edge.get("current_weight_band", "")),
                 )
             except Exception as exc:

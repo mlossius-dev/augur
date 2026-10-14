@@ -3,8 +3,10 @@ Augur LLM client.
 
 A thin abstraction over OpenRouter that enforces three invariants:
 
-1. Every call emits a Langfuse trace with stage tag, model, prompt template ID,
-   and any relevant entity IDs.  No silent LLM calls.
+1. Every call is recorded in `llm_calls` (see augur.llm.call_log) with stage,
+   model, prompt template ID, the caller's entity IDs, input, output, tokens,
+   cost and latency.  The row is written before the call is made, so there
+   are no silent LLM calls: if it cannot be written, the call is not made.
 
 2. Two API keys are managed internally — the main pipeline key and the
    free-tier conversation key.  Calling code specifies a stage; the client
@@ -12,7 +14,14 @@ A thin abstraction over OpenRouter that enforces three invariants:
 
 3. A daily budget cap is enforced for the main key.  Once the day's spend
    reaches the configured limit, the client raises LLMBudgetExceededError
-   rather than continuing to bill.
+   rather than continuing to bill.  Spend is the real per-call cost
+   OpenRouter reports (`usage.cost`, requested with `usage.include`), summed
+   from `llm_calls`, so every process shares one cap.  A budgeted call whose
+   cost OpenRouter does not report raises LLMCostUnreportedError: an
+   unmetered call is a budget leak, and leaks must be loud.
+
+Each request also carries OpenRouter's `trace` field (trace_id = our call_id),
+so if OpenRouter Broadcast is switched on, its traces join back to llm_calls.
 
 Usage:
 
@@ -29,17 +38,18 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import logging
-from dataclasses import dataclass, field
+import time
+import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 import structlog
-from langfuse import Langfuse
 from openai import AsyncOpenAI, RateLimitError
 
 from augur.config import Settings, get_settings
+from augur.llm.call_log import CallLog, LLMCallEnd, LLMCallStart, PostgresCallLog
 from augur.llm.models import DEFAULT_MODEL_ROUTING, FREE_TIER_STAGES, PipelineStage
 
 log = structlog.get_logger(__name__)
@@ -53,6 +63,10 @@ class LLMCallError(Exception):
     """Raised when an LLM call fails after all retries are exhausted."""
 
 
+class LLMCostUnreportedError(Exception):
+    """Raised when OpenRouter returns a budgeted completion without its cost."""
+
+
 @dataclass
 class LLMResponse:
     content: str
@@ -60,29 +74,16 @@ class LLMResponse:
     prompt_tokens: int
     completion_tokens: int
     cost_usd: Decimal
-    langfuse_trace_id: str
+    # Primary key of the llm_calls row; recorded as provenance on graph writes
+    call_id: str
 
 
-@dataclass
-class _DailySpend:
-    """Tracks USD spend for the current UTC day."""
+def _utc_today() -> date:
+    return datetime.now(UTC).date()
 
-    day: date = field(default_factory=lambda: datetime.now(UTC).date())
-    total: Decimal = field(default_factory=Decimal)
 
-    def reset_if_new_day(self) -> None:
-        today = datetime.now(UTC).date()
-        if today != self.day:
-            self.day = today
-            self.total = Decimal("0")
-
-    def add(self, amount: Decimal) -> None:
-        self.reset_if_new_day()
-        self.total += amount
-
-    def exceeds(self, cap: Decimal) -> bool:
-        self.reset_if_new_day()
-        return self.total >= cap
+def _trace_value(value: Any) -> Any:
+    return value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
 
 
 class LLMClient:
@@ -99,46 +100,45 @@ class LLMClient:
         openrouter_api_key: str,
         openrouter_free_tier_api_key: str,
         openrouter_base_url: str,
-        langfuse_host: str,
-        langfuse_public_key: str,
-        langfuse_secret_key: str,
         daily_budget_usd: Decimal,
+        call_log: CallLog,
+        environment: str = "development",
         model_routing: dict[PipelineStage, str] | None = None,
     ) -> None:
         self._daily_budget = daily_budget_usd
-        self._spend = _DailySpend()
+        self._call_log = call_log
+        self._environment = environment
         self._model_routing = model_routing or dict(DEFAULT_MODEL_ROUTING)
+
+        # Retries are handled in complete(); the SDK's own retries are disabled
+        # so one logical call never becomes several silent billed attempts.
 
         # Main pipeline client (paid key)
         self._main_client = AsyncOpenAI(
             api_key=openrouter_api_key,
             base_url=openrouter_base_url,
+            max_retries=0,
         )
 
         # Conversation-layer client (free-tier key only)
         self._free_client = AsyncOpenAI(
             api_key=openrouter_free_tier_api_key,
             base_url=openrouter_base_url,
-        )
-
-        # Langfuse observability — all traces land here regardless of which key called
-        self._langfuse = Langfuse(
-            host=langfuse_host,
-            public_key=langfuse_public_key,
-            secret_key=langfuse_secret_key,
+            max_retries=0,
         )
 
     @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> LLMClient:
+    def from_settings(
+        cls, settings: Settings | None = None, *, call_log: CallLog | None = None
+    ) -> LLMClient:
         cfg = settings or get_settings()
         return cls(
             openrouter_api_key=cfg.openrouter_api_key,
             openrouter_free_tier_api_key=cfg.openrouter_free_tier_api_key,
             openrouter_base_url=cfg.openrouter_base_url,
-            langfuse_host=cfg.langfuse_host,
-            langfuse_public_key=cfg.langfuse_public_key,
-            langfuse_secret_key=cfg.langfuse_secret_key,
             daily_budget_usd=cfg.daily_llm_budget_usd,
+            call_log=call_log or PostgresCallLog(),
+            environment=cfg.augur_env,
         )
 
     def model_for_stage(self, stage: PipelineStage) -> str:
@@ -155,120 +155,137 @@ class LLMClient:
         temperature: float = 0.1,
     ) -> LLMResponse:
         """
-        Make an LLM completion call with full Langfuse tracing.
+        Make an LLM completion call, recorded in llm_calls.
 
         Args:
             stage: The pipeline stage (drives model and key selection).
-            prompt_template_id: Identifier for the prompt template (logged to Langfuse).
+            prompt_template_id: Identifier for the prompt template.
             messages: OpenAI-style message list.
-            metadata: Arbitrary key/value pairs recorded on the Langfuse trace.
-                      Should include entity IDs relevant to the call
-                      (payload_id, signal_id, lens_id, etc.).
-            max_retries: Number of retry attempts on transient errors.
+            metadata: Key/value pairs recorded with the call.  Should include
+                      entity IDs relevant to the call (payload_id, signal_id,
+                      lens_id, etc.).
+            max_retries: Number of attempts on transient errors.
             temperature: Sampling temperature (kept low for structured extraction).
 
         Returns:
-            LLMResponse with content and cost information.
+            LLMResponse with content, cost and the call_id of the llm_calls row.
 
         Raises:
             LLMBudgetExceededError: Daily spend cap reached (main key only).
             LLMCallError: All retries exhausted.
+            LLMCostUnreportedError: OpenRouter did not report a budgeted call's cost.
         """
         is_free_tier = stage in FREE_TIER_STAGES
-        if not is_free_tier and self._spend.exceeds(self._daily_budget):
-            raise LLMBudgetExceededError(
-                f"Daily LLM budget of ${self._daily_budget} exceeded. "
-                f"Current spend: ${self._spend.total}. "
-                "The budget resets at midnight UTC."
-            )
+        if not is_free_tier:
+            spent = await self._call_log.budgeted_spend_for(_utc_today())
+            if spent >= self._daily_budget:
+                raise LLMBudgetExceededError(
+                    f"Daily LLM budget of ${self._daily_budget} exceeded. "
+                    f"Current spend: ${spent}. "
+                    "The budget resets at midnight UTC."
+                )
 
         model = self.model_for_stage(stage)
         client = self._free_client if is_free_tier else self._main_client
+        call_id = uuid.uuid4()
+        metadata = metadata or {}
 
-        trace = self._langfuse.trace(
-            name=f"{stage}.{prompt_template_id}",
-            tags=[str(stage)],
-            metadata={
-                "stage": str(stage),
-                "prompt_template_id": prompt_template_id,
-                "model": model,
-                "is_free_tier": is_free_tier,
-                **(metadata or {}),
-            },
+        # Recorded before the call: if this write fails, nothing is billed.
+        await self._call_log.start(
+            LLMCallStart(
+                call_id=call_id,
+                stage=str(stage),
+                prompt_template_id=prompt_template_id,
+                model=model,
+                is_free_tier=is_free_tier,
+                temperature=temperature,
+                metadata=metadata,
+                messages=messages,
+            )
         )
 
-        generation = trace.generation(
-            name=f"openrouter.{model}",
-            model=model,
-            input=messages,
-            metadata=metadata or {},
-        )
+        trace = {
+            "trace_id": str(call_id),
+            "trace_name": f"{stage}.{prompt_template_id}",
+            "stage": str(stage),
+            "prompt_template_id": prompt_template_id,
+            "environment": self._environment,
+            **{k: _trace_value(v) for k, v in metadata.items()},
+        }
 
+        started = time.monotonic()
+        attempts = 0
         last_error: Exception | None = None
+        response: Any = None
         for attempt in range(max_retries):
+            attempts = attempt + 1
             try:
                 response = await client.chat.completions.create(
                     model=model,
                     messages=messages,  # type: ignore[arg-type]
                     temperature=temperature,
+                    extra_body={"usage": {"include": True}, "trace": trace},
                 )
                 break
-            except RateLimitError as exc:
-                wait = 2 ** attempt
-                log.warning(
-                    "llm.rate_limit",
-                    stage=stage,
-                    model=model,
-                    attempt=attempt + 1,
-                    retry_in=wait,
-                )
-                await asyncio.sleep(wait)
-                last_error = exc
             except Exception as exc:
-                wait = 2 ** attempt
-                log.error(
-                    "llm.call_error",
+                last_error = exc
+                event = "llm.rate_limit" if isinstance(exc, RateLimitError) else "llm.call_error"
+                log.warning(
+                    event,
                     stage=stage,
                     model=model,
-                    attempt=attempt + 1,
+                    attempt=attempts,
                     error=str(exc),
+                    call_id=str(call_id),
                 )
-                await asyncio.sleep(wait)
-                last_error = exc
-        else:
-            generation.end(level="ERROR", status_message=str(last_error))
-            trace.update(output={"error": str(last_error)})
-            self._langfuse.flush()
+                if attempts < max_retries:
+                    await asyncio.sleep(2**attempt)
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+
+        if response is None:
+            await self._call_log.finish(
+                call_id,
+                LLMCallEnd(
+                    status="error",
+                    attempts=attempts,
+                    latency_ms=latency_ms,
+                    error=str(last_error),
+                ),
+            )
             raise LLMCallError(
                 f"LLM call for stage={stage} model={model} failed after "
                 f"{max_retries} attempts: {last_error}"
             ) from last_error
 
         content = response.choices[0].message.content or ""
-
-        # OpenRouter returns usage; fall back to 0 if not available
         usage = response.usage
         prompt_tokens = usage.prompt_tokens if usage else 0
         completion_tokens = usage.completion_tokens if usage else 0
+        raw_cost = (usage.model_extra or {}).get("cost") if usage else None
+        cost_usd = Decimal(str(raw_cost)) if raw_cost is not None else None
+        cost_missing = cost_usd is None and not is_free_tier
 
-        # Cost is reported in the response headers by OpenRouter but not in
-        # the standard API body.  We record token counts; Langfuse computes
-        # cost from its model pricing tables.
-        cost_usd = Decimal("0")  # placeholder; true cost tracked in Langfuse
-
-        generation.end(
-            output=content,
-            usage={
-                "input": prompt_tokens,
-                "output": completion_tokens,
-                "unit": "TOKENS",
-            },
+        await self._call_log.finish(
+            call_id,
+            LLMCallEnd(
+                status="error" if cost_missing else "ok",
+                attempts=attempts,
+                latency_ms=latency_ms,
+                output=content,
+                error="OpenRouter did not report cost" if cost_missing else None,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+            ),
         )
-        trace.update(output={"content": content[:500]})  # truncate for readability
-        self._langfuse.flush()
 
-        if not is_free_tier and cost_usd > 0:
-            self._spend.add(cost_usd)
+        if cost_missing:
+            log.error("llm.cost_unreported", stage=stage, model=model, call_id=str(call_id))
+            raise LLMCostUnreportedError(
+                f"OpenRouter returned no usage.cost for stage={stage} model={model}; "
+                "refusing to leave the call unmetered."
+            )
 
         log.info(
             "llm.complete",
@@ -276,7 +293,9 @@ class LLMClient:
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            trace_id=trace.id,
+            cost_usd=str(cost_usd),
+            latency_ms=latency_ms,
+            call_id=str(call_id),
         )
 
         return LLMResponse(
@@ -284,28 +303,28 @@ class LLMClient:
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            cost_usd=cost_usd,
-            langfuse_trace_id=trace.id,
+            cost_usd=cost_usd or Decimal(0),
+            call_id=str(call_id),
         )
 
     async def health_check(self) -> dict[str, Any]:
         """
-        Verify connectivity to Langfuse and OpenRouter.
+        Report key configuration and today's spend.  Makes no LLM call.
 
-        Used by the /health endpoint and the operator CLI.  Does not make a
-        full LLM call; only checks that the Langfuse SDK can reach its host.
+        Used by the /health endpoint and the operator CLI.
         """
-        langfuse_ok = False
+        call_log_ok = False
+        today_spend: Decimal | None = None
         try:
-            self._langfuse.auth_check()
-            langfuse_ok = True
+            today_spend = await self._call_log.budgeted_spend_for(_utc_today())
+            call_log_ok = True
         except Exception as exc:
-            log.warning("llm.health.langfuse_unreachable", error=str(exc))
+            log.warning("llm.health.call_log_unavailable", error=str(exc))
 
         return {
-            "langfuse_reachable": langfuse_ok,
+            "call_log_available": call_log_ok,
             "main_key_configured": bool(self._main_client.api_key),
             "free_tier_key_configured": bool(self._free_client.api_key),
             "daily_budget_usd": str(self._daily_budget),
-            "today_spend_usd": str(self._spend.total),
+            "today_spend_usd": str(today_spend) if today_spend is not None else None,
         }

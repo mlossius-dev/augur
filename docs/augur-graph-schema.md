@@ -336,7 +336,7 @@ Every node and every edge carries `created_from` (the originating signal IDs) an
 - The originating raw payloads (via signals → payloads).
 - The source IDs (via payloads → sources).
 - The lens IDs that produced the signals.
-- The Langfuse trace IDs for the LLM calls involved.
+- The `llm_calls` IDs of the LLM calls involved.
 
 This is the chain that powers the "why does Augur think this?" trace from the architecture document.
 

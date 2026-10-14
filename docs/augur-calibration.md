@@ -339,7 +339,7 @@ Beyond ongoing live calibration, dedicated retroactive runs are useful periodica
 - **No prediction validation.** Calibration does not ask whether projections came true. That's a separate evaluation, deferred until projection itself is mature.
 - **No ground-truth event labeling.** Calibration does not require the operator to label specific events as "the truth." Signal survival is the metric; survival is determined by downstream graph operations, not by external ground truth.
 - **No automatic source admission.** Calibration scores existing sources; it does not propose new sources. SearXNG-discovered candidates go through the operator admission process (see `augur-sources.md`), not through calibration.
-- **No model evaluation.** Calibration evaluates sources and lenses. Model quality is evaluated separately, via Langfuse cost-and-latency dashboards and via spot-checks on extraction quality.
+- **No model evaluation.** Calibration evaluates sources and lenses. Model quality is evaluated separately, via cost and latency summaries over `llm_calls` (`augur llm-calls --summary`) and via spot-checks on extraction quality.
 - **No real-time scoring.** Signal outcomes resolve over weeks. Scoring is necessarily lagged. The system does not pretend to know in real time whether a fresh signal is "good."
 
 ---

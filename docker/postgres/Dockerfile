@@ -31,7 +31,7 @@ RUN git clone --branch ${PGVECTOR_VERSION} --depth 1 \
     && rm -rf /tmp/pgvector
 
 # Apache AGE — Cypher graph queries over Postgres tables
-ARG AGE_VERSION=PG16/v1.5.0
+ARG AGE_VERSION=release/PG16/1.5.0
 RUN git clone --branch ${AGE_VERSION} --depth 1 \
         https://github.com/apache/age.git /tmp/age \
     && cd /tmp/age \

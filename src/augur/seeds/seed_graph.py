@@ -42,13 +42,24 @@ async def load_seed_graph(pool) -> dict[str, int]:  # type: ignore[type-arg]
     Load the fertilizer→food chain seed graph via the Applier.
 
     Returns a dict with keys "applied" and "rejected".
-    Idempotent: re-running will produce alias-rewrite events rather than
-    duplicate nodes (entity names are registered in the alias table on first run).
+    Idempotent: if seed events have already been applied, nothing is loaded.
+    Only entities are deduplicated by alias, so a second pass would duplicate
+    the event and condition nodes and every edge.
     """
     from augur.graph.models import (
         CreateEdgeOperation,
         CreateNodeOperation,
     )
+
+    async with pool.acquire() as conn:
+        already_seeded = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM graph_update_events"
+            " WHERE source = $1 AND NOT rejected)",
+            _SEED_SOURCE,
+        )
+    if already_seeded:
+        log.info("seed_graph.already_loaded")
+        return {"applied": 0, "rejected": 0}
 
     applier = Applier(pool)
 
@@ -316,31 +327,25 @@ async def load_seed_graph(pool) -> dict[str, int]:  # type: ignore[type-arg]
         ),
     ]
 
-    # Apply nodes first, then edges
-    node_result = await applier.apply(
-        node_ops,
-        content_timestamp=_SEED_TIMESTAMP,
-        source=_SEED_SOURCE,
-    )
-    edge_result = await applier.apply(
-        edge_ops,
+    # One batch, nodes before edges: the edges reference nodes by slug, and the
+    # applier only resolves slugs against nodes created in the same batch.
+    result = await applier.apply(
+        node_ops + edge_ops,
         content_timestamp=_SEED_TIMESTAMP,
         source=_SEED_SOURCE,
     )
 
-    total_applied = len(node_result.applied) + len(edge_result.applied)
-    total_rejected = len(node_result.rejected) + len(edge_result.rejected)
+    total_applied = len(result.applied)
+    total_rejected = len(result.rejected)
 
     log.info(
         "seed_graph.loaded",
-        nodes_applied=len(node_result.applied),
-        nodes_rejected=len(node_result.rejected),
-        edges_applied=len(edge_result.applied),
-        edges_rejected=len(edge_result.rejected),
+        applied=total_applied,
+        rejected=total_rejected,
     )
 
     if total_rejected:
-        for event in node_result.rejected + edge_result.rejected:
+        for event in result.rejected:
             log.warning(
                 "seed_graph.rejected",
                 event_type=event.event_type,

@@ -20,6 +20,9 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        # .env also carries the POSTGRES_* values docker-compose reads to
+        # initialise the database; they are not app settings.
+        extra="ignore",
     )
 
     # ── Database ──────────────────────────────────────────────────────────────
@@ -34,11 +37,6 @@ class Settings(BaseSettings):
     # Free-tier key — conversation layer only; must be restricted on OpenRouter dashboard
     openrouter_free_tier_api_key: str
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-
-    # ── Langfuse ──────────────────────────────────────────────────────────────
-    langfuse_host: str
-    langfuse_public_key: str
-    langfuse_secret_key: str
 
     # ── SearXNG ───────────────────────────────────────────────────────────────
     searxng_url: str = "http://searxng:8080"

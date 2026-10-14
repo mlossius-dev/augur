@@ -428,7 +428,7 @@ def _make_mock_llm(content: str = "[]") -> MagicMock:
     response.model = "test-model"
     response.prompt_tokens = 200
     response.completion_tokens = 50
-    response.langfuse_trace_id = "trace-123"
+    response.call_id = "trace-123"
 
     llm = AsyncMock()
     llm.complete = AsyncMock(return_value=response)

@@ -77,6 +77,10 @@ async def init_db(settings: Settings | None = None) -> None:
         min_size=cfg.db_pool_min_size,
         max_size=cfg.db_pool_max_size,
         init=_configure_connection,
+        # The pool runs RESET ALL when a connection is released, which wipes
+        # the search_path set in _configure_connection. Passing it as a startup
+        # parameter makes it the session default, so it survives the reset.
+        server_settings={"search_path": "ag_catalog, \"$user\", public"},
         command_timeout=30,
     )
 
