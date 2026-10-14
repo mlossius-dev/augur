@@ -55,8 +55,21 @@ async def _ingestion_job(app_state: Any) -> None:
         log.error("scheduler.ingestion_failed", error=str(exc))
 
 
+def cap_extraction_payloads(rows: list, calls_per_run: int, calls_per_payload: int) -> list:
+    """
+    The payloads one extraction run may process: as many as fit in
+    `calls_per_run` calls, at least one, in the order given (newest first).
+
+    Hourly extraction would otherwise spend the day's free-tier quota on its
+    own. Payloads left out are picked up by the next run while they are still
+    inside its two-hour window.
+    """
+    return rows[: max(1, calls_per_run // calls_per_payload)]
+
+
 async def _extraction_job(app_state: Any) -> None:
     """Hourly extraction: run all active lenses over recently ingested payloads."""
+    from augur.config import get_settings
     from augur.extraction.executor import LensExecutor, detect_cross_lens_convergence
     from augur.extraction.lenses import ACTIVE_LENSES
     from augur.extraction.tier_a import TierAStore
@@ -108,6 +121,19 @@ async def _extraction_job(app_state: Any) -> None:
         return
 
     edge_context = [dict(r) for r in disconf_edge_rows]
+
+    calls_per_payload = len(ACTIVE_LENSES) + (1 if edge_context else 0)
+    capped = cap_extraction_payloads(
+        payload_rows, get_settings().extraction_calls_per_run, calls_per_payload
+    )
+    if len(capped) < len(payload_rows):
+        log.info(
+            "scheduler.extraction_capped",
+            n_available=len(payload_rows),
+            n_processed=len(capped),
+            calls_per_payload=calls_per_payload,
+        )
+    payload_rows = capped
     log.info(
         "scheduler.extraction_start",
         n_payloads=len(payload_rows),

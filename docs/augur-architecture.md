@@ -210,6 +210,10 @@ Model selection is a **runtime configuration concern**, not an architectural one
 
 These are guidance, not commitments. The orchestration layer must make this a config decision.
 
+**Current configuration (October 2026): free models only.** Every stage defaults to OpenRouter's free models router (`openrouter/free`), which picks an available free model per call; `AUGUR_MODEL_<STAGE>` pins a stage to a specific model. The operator chose this because the paid budget was too high for a system that is not a product, and accepts lower extraction and anchoring quality. The table above still describes what each stage would use if paid models return.
+
+The free tier limits requests, not spend: 20 a minute and 1,000 a day per OpenRouter account (50 a day for accounts that have bought less than $10 of credits in total), shared with Augur Discourse. The LLM client therefore enforces a call quota as well as the dollar budget: `LLM_DAILY_CALL_LIMIT` (default 800) and `LLM_CALLS_PER_MINUTE` (default 12), counted from `llm_calls`, failed calls included. Hourly extraction is capped at `EXTRACTION_CALLS_PER_RUN` (default 20, about two payloads with all lenses), newest payloads first, so it cannot spend the quota that anchoring, disconfirmation and the reader-facing stages need. Coverage, not cost, is now the binding constraint: most ingested payloads are never read by a lens.
+
 ---
 
 ## Component contracts

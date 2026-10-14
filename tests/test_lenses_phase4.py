@@ -45,10 +45,10 @@ _PAYLOAD_ID = uuid.uuid4()
 
 
 class TestActiveLensesCatalog:
-    def test_all_six_standard_lenses_present(self):
+    def test_all_standard_lenses_present(self):
         lens_ids = {l.lens_id for l in ACTIVE_LENSES}
         expected = {
-            "commodities", "financial", "geopolitical",
+            "commodities", "financial", "geopolitical", "market",
             "physical_world", "regulatory", "narrative_divergence",
         }
         assert expected == lens_ids

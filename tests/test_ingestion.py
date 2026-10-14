@@ -404,7 +404,7 @@ class TestFredClient:
         assert len(results) == 1
         assert "DCOILWTICO" in results[0].raw_content
         assert results[0].content_type == "structured_feed_entry"
-        assert results[0].metadata["latest_value"] == "75.32"
+        assert results[0].metadata["latest_value"] == 75.32
 
     @pytest.mark.asyncio
     async def test_skips_missing_values(self):

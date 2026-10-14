@@ -184,7 +184,7 @@ These are documented in `docs/augur-roadmap.md` "Failure modes to watch for." Th
   - `context.py` — `retrieve_context()` uses pg_trgm `similarity()` (threshold 0.1) to match nodes; pulls connected edges, recent signals (ILIKE on node name terms), dimension summaries. No vector embeddings — deliberately simple.
   - `prompts.py` — `build_messages()` injects context first, then interleaves session history (last 6 turns), then the current question.
   - `session.py` — `create_session()`, `touch_session()`, `get_session_history()`, `save_message()`, `prune_sessions()`.
-  - `orchestrator.py` — `ConversationOrchestrator.ask()` wires retrieval → history → LLM → persistence; uses `PipelineStage.CONVERSATION` (free-tier Gemini Flash key).
+  - `orchestrator.py` — `ConversationOrchestrator.ask()` wires retrieval → history → LLM → persistence; uses `PipelineStage.CONVERSATION` (free-tier key).
 - **`src/augur/api/conversation.py`** — `POST /api/conversation/query`, `GET /api/conversation/{session_id}`.
 - **`src/augur/scheduler.py`** — Sunday 07:00 UTC `prune_sessions` CronTrigger job.
 - **`static/js/conversation.js`** — `submitQuestion()`, `appendMessage()`, `clearConversation()`; multi-turn session state held client-side.
@@ -204,7 +204,7 @@ These are documented in `docs/augur-roadmap.md` "Failure modes to watch for." Th
 - **Postgres 16+** with pgvector, pg_trgm, PostGIS, and Apache AGE extensions.
 - **SearXNG** for general web search (existing instance on the VPS).
 - **`llm_calls`** (in Postgres) for LLM observability; OpenRouter Broadcast optionally on top.
-- **OpenRouter** for all LLM inference. Two API keys: one for production-quality models on the main pipeline, one free-tier-only for the conversation layer.
+- **OpenRouter** for all LLM inference, on free models (`openrouter/free`) by default. Two API keys: one for the main pipeline, one restricted to free models for the conversation layer and digest notes.
 - **Object storage** (Hetzner or Backblaze B2) for backups.
 
 The local development environment should mirror the VPS structure as closely as possible. Docker Compose makes this straightforward; use it.
@@ -215,7 +215,8 @@ The local development environment should mirror the VPS structure as closely as 
 
 LLM inference costs money. Be aware of:
 
-- **Lens extraction is the highest-volume LLM stage.** Use cheap models (small fast OpenRouter offerings) by default. Reserve stronger models for anchoring and disconfirmation.
+- **Every stage runs on free models by default** (operator decision, October 2026; see `docs/augur-architecture.md`, model selection). Do not change a default to a paid model; a stage is moved to a paid model only by the operator, through `AUGUR_MODEL_<STAGE>`.
+- **The free tier limits calls, not dollars.** The client enforces a daily and per-minute call quota from `llm_calls`. Lens extraction is the highest-volume stage and is capped per run (`EXTRACTION_CALLS_PER_RUN`). New code that calls the LLM in a loop must expect `LLMQuotaExceededError` and stop, not retry.
 - **The conversation layer uses a separate free-tier-only key.** Do not route conversation calls through the main key.
 - **Daily budget caps are enforced at the LLM client layer.** If a budget is hit, the client refuses further calls until the next cycle. Do not work around this.
 - **Calibration runs are expensive.** A single replay run can process tens of thousands of payloads. Use the cheapest viable model class. Cache aggressively.

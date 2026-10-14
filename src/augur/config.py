@@ -50,7 +50,29 @@ class Settings(BaseSettings):
 
     # ── Cost / budget ─────────────────────────────────────────────────────────
     # Daily spend cap for the main pipeline key; enforced at the call site.
+    # With every stage on free models this stays at $0; it guards against a
+    # paid model being configured by mistake.
     daily_llm_budget_usd: Decimal = Decimal("5.00")
+
+    # ── LLM call quota (OpenRouter free tier) ─────────────────────────────────
+    # OpenRouter's free models allow 1,000 requests a day per ACCOUNT (50 if the
+    # account has bought less than $10 of credits in total) and 20 a minute.
+    # Discourse draws on the same account, so Core keeps below the full quota.
+    # Failed calls count against OpenRouter's quota, so they count here too.
+    llm_daily_call_limit: int = 800
+    llm_calls_per_minute: int = 12
+    # Extraction runs hourly and would spend the whole quota on its own; this
+    # caps each run, newest payloads first, leaving room for anchoring.
+    extraction_calls_per_run: int = 20
+
+    # ── Model routing overrides ───────────────────────────────────────────────
+    # Empty = the default in augur.llm.models (openrouter/free for every stage).
+    augur_model_extraction: str = ""
+    augur_model_anchoring: str = ""
+    augur_model_disconfirmation: str = ""
+    augur_model_projection: str = ""
+    augur_model_conversation: str = ""
+    augur_model_digest: str = ""
 
     # ── Ingestion ─────────────────────────────────────────────────────────────
     # Local filesystem archive root for raw payloads

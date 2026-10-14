@@ -2,11 +2,19 @@
 Model routing configuration.
 
 Maps pipeline stages to OpenRouter model identifiers.  All model selection
-is runtime configuration; changing the model for a stage requires no code
-changes, only config updates.
+is runtime configuration: override a stage with AUGUR_MODEL_<STAGE>
+(e.g. AUGUR_MODEL_EXTRACTION=<vendor>/<model>:free).
 
-The architecture document's guidance:
-  - Lens extraction  → small/fast (high volume, cost-sensitive)
+Every stage defaults to OpenRouter's free models router (`openrouter/free`),
+which picks an available free model per request.  This is an operator
+decision (October 2026): the paid budget was too high for a system that is
+not a product, and lower extraction quality is an accepted risk.  The free
+tier is rate limited per account (see Settings.llm_daily_call_limit), so
+volume, not cost, is now the constraint.
+
+The architecture document's strength guidance still describes what each
+stage would ideally use if a paid model is configured:
+  - Lens extraction  → small/fast (high volume)
   - Anchoring        → mid-strength (structured graph reasoning)
   - Disconfirmation  → strong (quality matters; runs infrequently)
   - Projection       → mid to strong
@@ -29,22 +37,25 @@ class PipelineStage(StrEnum):
     DIGEST = "digest"
 
 
-# Default model routing table.  Override individual entries via environment
-# variables named AUGUR_MODEL_<STAGE> (e.g. AUGUR_MODEL_EXTRACTION).
+FREE_MODELS_ROUTER = "openrouter/free"
+
+# Default model routing table.  Override per stage with AUGUR_MODEL_<STAGE>.
 DEFAULT_MODEL_ROUTING: dict[PipelineStage, str] = {
-    # Small/fast models for high-volume extraction
-    PipelineStage.EXTRACTION: "google/gemini-flash-1.5",
-    # Mid-strength for anchoring — needs structured reasoning over graph state
-    PipelineStage.ANCHORING: "anthropic/claude-3.5-haiku",
-    # Strong model for disconfirmation — quality over cost
-    PipelineStage.DISCONFIRMATION: "anthropic/claude-opus-4",
-    # Mid to strong for projection
-    PipelineStage.PROJECTION: "anthropic/claude-3.5-sonnet",
-    # Free-tier for conversation (routes through the free-tier API key)
-    PipelineStage.CONVERSATION: "google/gemini-2.0-flash-exp:free",
-    # Free-tier for dimension digest notes — grounded summaries, zero cost
-    PipelineStage.DIGEST: "google/gemini-2.0-flash-exp:free",
+    stage: FREE_MODELS_ROUTER for stage in PipelineStage
 }
+
+
+def is_free_model(model: str) -> bool:
+    """True for OpenRouter's free router and for any `:free` model variant."""
+    return model == FREE_MODELS_ROUTER or model.endswith(":free")
+
+
+def routing_from_overrides(overrides: dict[PipelineStage, str]) -> dict[PipelineStage, str]:
+    """The default routing with each non-empty override applied."""
+    routing = dict(DEFAULT_MODEL_ROUTING)
+    routing.update({stage: model for stage, model in overrides.items() if model})
+    return routing
+
 
 # Stages that must use the free-tier OpenRouter key.
 # The LLM client enforces this split; calling code never chooses the key.

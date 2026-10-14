@@ -404,6 +404,16 @@ class TestComputeDimensionScores:
 from augur.presentation.changes import get_recent_changes
 
 
+def _fetch_results(weight_rows, state_rows, new_edge_rows) -> AsyncMock:
+    """
+    conn.fetch for get_recent_changes: the three change-source queries return
+    the given rows; the enrichment queries that follow (downstream edge
+    counts, topic membership) return nothing.
+    """
+    results = iter([weight_rows, state_rows, new_edge_rows])
+    return AsyncMock(side_effect=lambda *args, **kwargs: next(results, []))
+
+
 class TestGetRecentChanges:
     @pytest.mark.asyncio
     async def test_empty_db_returns_empty_list(self):
@@ -425,7 +435,7 @@ class TestGetRecentChanges:
         edge_id = uuid.uuid4()
         source_id = uuid.uuid4()
         target_id = uuid.uuid4()
-        conn.fetch = AsyncMock(side_effect=[
+        conn.fetch = _fetch_results(
             # weight_rows — one strengthened edge
             [
                 {
@@ -440,7 +450,7 @@ class TestGetRecentChanges:
             [],
             # new_edge_rows — empty
             [],
-        ])
+        )
         pool.acquire = MagicMock(return_value=AsyncMock(
             __aenter__=AsyncMock(return_value=conn),
             __aexit__=AsyncMock(return_value=False),
@@ -455,7 +465,7 @@ class TestGetRecentChanges:
         pool = AsyncMock()
         conn = AsyncMock()
         node_id = uuid.uuid4()
-        conn.fetch = AsyncMock(side_effect=[
+        conn.fetch = _fetch_results(
             # weight_rows — empty
             [],
             # state_rows — one activation
@@ -470,7 +480,7 @@ class TestGetRecentChanges:
             ],
             # new_edge_rows — empty
             [],
-        ])
+        )
         pool.acquire = MagicMock(return_value=AsyncMock(
             __aenter__=AsyncMock(return_value=conn),
             __aexit__=AsyncMock(return_value=False),
@@ -495,7 +505,7 @@ class TestGetRecentChanges:
             }
             for i in range(5)
         ]
-        conn.fetch = AsyncMock(side_effect=[rows, [], []])
+        conn.fetch = _fetch_results(rows, [], [])
         pool.acquire = MagicMock(return_value=AsyncMock(
             __aenter__=AsyncMock(return_value=conn),
             __aexit__=AsyncMock(return_value=False),
