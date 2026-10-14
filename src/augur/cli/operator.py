@@ -130,6 +130,17 @@ async def _migrate_async() -> None:
     applied_count = 0
 
     async with pool.acquire() as conn:
+        # schema_migrations may not exist yet on a fresh database
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                id          SERIAL      PRIMARY KEY,
+                version     TEXT        NOT NULL UNIQUE,
+                description TEXT        NOT NULL,
+                applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
         for f in migration_files:
             version = f.stem.split("_")[0]
             already = await conn.fetchval(
@@ -270,7 +281,7 @@ def load_seed(
     Load Phase 1 seed data: alias table + fertilizer→food chain graph.
 
     Idempotent: safe to run multiple times.  Existing aliases are skipped;
-    existing entity nodes are alias-rewritten rather than duplicated.
+    the seed graph is skipped if it has already been loaded.
     """
     _run(_load_seed_async(aliases_only=aliases_only, graph_only=graph_only))
 

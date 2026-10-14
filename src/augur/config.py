@@ -20,6 +20,9 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        # .env also carries the POSTGRES_* values docker-compose reads to
+        # initialise the database; they are not app settings.
+        extra="ignore",
     )
 
     # ── Database ──────────────────────────────────────────────────────────────
