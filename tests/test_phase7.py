@@ -429,6 +429,19 @@ class TestSchedulerJobs:
         assert "extraction" in job_ids
         assert "ingestion" in job_ids
 
+    def test_every_job_is_a_coroutine_function(self):
+        # AsyncIOScheduler runs plain functions in a worker thread, which has
+        # no event loop; only coroutine functions run on the app's loop.
+        import inspect
+
+        from augur.scheduler import create_scheduler
+
+        app_state = MagicMock()
+        scheduler = create_scheduler(app_state)
+        for job in scheduler.get_jobs():
+            assert inspect.iscoroutinefunction(job.func), job.id
+            assert job.args == (app_state,), job.id
+
     def test_live_calibration_job_runs_after_disconfirmation(self):
         from augur.scheduler import create_scheduler
         from apscheduler.triggers.cron import CronTrigger

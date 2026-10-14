@@ -16,7 +16,6 @@ APScheduler docs: https://apscheduler.readthedocs.io/en/3.x/
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -320,11 +319,15 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
     Call start() on the returned scheduler during FastAPI lifespan startup.
     Call shutdown() during shutdown.
     """
+    # Jobs are coroutine functions: AsyncIOScheduler runs those on the app's
+    # event loop.  A plain function (such as a lambda wrapping ensure_future)
+    # would run in a worker thread with no event loop and fail every time.
     scheduler = AsyncIOScheduler()
 
     # Ingestion: every hour at :00
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_ingestion_job(app_state)),
+        func=_ingestion_job,
+        args=[app_state],
         trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:00:00"),
         id="ingestion",
         name="Ingestion pipeline",
@@ -335,7 +338,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Extraction: every hour at :10 (offset so ingestion finishes first)
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_extraction_job(app_state)),
+        func=_extraction_job,
+        args=[app_state],
         trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:10:00"),
         id="extraction",
         name="Extraction pipeline",
@@ -346,7 +350,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Anchoring: every hour at :25 (after extraction has had 15 min to run)
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_anchoring_job(app_state)),
+        func=_anchoring_job,
+        args=[app_state],
         trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:25:00"),
         id="anchoring",
         name="Anchoring pipeline",
@@ -357,7 +362,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Dimension notes: every hour at :40 (after anchoring has settled)
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_dimension_notes_job(app_state)),
+        func=_dimension_notes_job,
+        args=[app_state],
         trigger=IntervalTrigger(hours=1, start_date="2024-01-01 00:40:00"),
         id="dimension_notes",
         name="Dimension editorial notes",
@@ -370,7 +376,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Disconfirmation: weekly, Sunday 02:00 UTC
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_disconfirmation_job(app_state)),
+        func=_disconfirmation_job,
+        args=[app_state],
         trigger=CronTrigger(day_of_week="sun", hour=2, minute=0, timezone="UTC"),
         id="disconfirmation",
         name="Disconfirmation pass",
@@ -381,7 +388,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Live calibration checkpoint: weekly, Sunday 04:00 UTC (after disconfirmation)
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_live_calibration_checkpoint_job(app_state)),
+        func=_live_calibration_checkpoint_job,
+        args=[app_state],
         trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="UTC"),
         id="live_calibration_checkpoint",
         name="Live calibration checkpoint",
@@ -392,7 +400,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Scenario projection: weekly, Sunday 06:00 UTC (after calibration checkpoint)
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_projection_job(app_state)),
+        func=_projection_job,
+        args=[app_state],
         trigger=CronTrigger(day_of_week="sun", hour=6, minute=0, timezone="UTC"),
         id="scenario_projection",
         name="Scenario projection",
@@ -403,7 +412,8 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
 
     # Session pruning: weekly, Sunday 07:00 UTC
     scheduler.add_job(
-        func=lambda: asyncio.ensure_future(_prune_sessions_job(app_state)),
+        func=_prune_sessions_job,
+        args=[app_state],
         trigger=CronTrigger(day_of_week="sun", hour=7, minute=0, timezone="UTC"),
         id="prune_sessions",
         name="Prune stale conversation sessions",
