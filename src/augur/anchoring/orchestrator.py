@@ -249,7 +249,7 @@ class AnchoringOrchestrator:
             content_timestamp=batch.content_timestamp,
             source="anchoring",
             triggered_by=batch.signal_ids,
-            langfuse_trace_ids=[response.langfuse_trace_id],
+            llm_call_ids=[response.call_id],
         )
         result.applier_result = applier_result
         result.n_applied = len(applier_result.applied)

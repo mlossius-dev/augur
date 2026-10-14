@@ -38,11 +38,6 @@ class Settings(BaseSettings):
     openrouter_free_tier_api_key: str
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
-    # ── Langfuse ──────────────────────────────────────────────────────────────
-    langfuse_host: str
-    langfuse_public_key: str
-    langfuse_secret_key: str
-
     # ── SearXNG ───────────────────────────────────────────────────────────────
     searxng_url: str = "http://searxng:8080"
 

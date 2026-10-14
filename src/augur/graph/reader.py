@@ -312,7 +312,7 @@ class GraphReader:
             type_data = json.loads(type_data)
 
         created_from = list(row["created_from"]) if row["created_from"] else []
-        langfuse_trace_ids = list(row["langfuse_trace_ids"]) if row["langfuse_trace_ids"] else []
+        llm_call_ids = list(row["llm_call_ids"]) if row["llm_call_ids"] else []
 
         return Node(
             node_id=row["node_id"],
@@ -321,7 +321,7 @@ class GraphReader:
             description=row["description"],
             type_data=type_data,
             created_from=created_from,
-            langfuse_trace_ids=langfuse_trace_ids,
+            llm_call_ids=llm_call_ids,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -331,7 +331,7 @@ class GraphReader:
         supporting = list(row["supporting_signals"]) if row["supporting_signals"] else []
         disconfirming = list(row["disconfirming_signals"]) if row["disconfirming_signals"] else []
         created_from = list(row["created_from"]) if row["created_from"] else []
-        langfuse_trace_ids = list(row["langfuse_trace_ids"]) if row["langfuse_trace_ids"] else []
+        llm_call_ids = list(row["llm_call_ids"]) if row["llm_call_ids"] else []
 
         return Edge(
             edge_id=row["edge_id"],
@@ -345,7 +345,7 @@ class GraphReader:
             falsification_criteria=row["falsification_criteria"],
             last_disconfirmation_pass=row.get("last_disconfirmation_pass"),
             created_from=created_from,
-            langfuse_trace_ids=langfuse_trace_ids,
+            llm_call_ids=llm_call_ids,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             deprecated=row["deprecated"],

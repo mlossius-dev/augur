@@ -112,7 +112,7 @@ class Node(BaseModel):
     description: str | None
     type_data: dict[str, Any]
     created_from: list[UUID] = Field(default_factory=list)
-    langfuse_trace_ids: list[str] = Field(default_factory=list)
+    llm_call_ids: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -134,7 +134,7 @@ class Edge(BaseModel):
     falsification_criteria: str
     last_disconfirmation_pass: datetime | None = None
     created_from: list[UUID] = Field(default_factory=list)
-    langfuse_trace_ids: list[str] = Field(default_factory=list)
+    llm_call_ids: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     deprecated: bool = False

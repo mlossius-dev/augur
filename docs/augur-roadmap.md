@@ -45,8 +45,7 @@ The temptation throughout will be to skip phases or build them out of order. The
 
 - Docker Compose stack on the Hetzner VPS with Postgres 16+ (with pgvector, pg_trgm, PostGIS, Apache AGE extensions enabled), Redis (in case it's needed later for orchestration), and a FastAPI application skeleton.
 - Connection to the existing SearXNG instance on the same VPS.
-- Connection to the existing Langfuse instance on the same VPS.
-- OpenRouter integration with a thin LLM client abstraction that emits Langfuse traces on every call.
+- OpenRouter integration with a thin LLM client abstraction that records every call in the `llm_calls` table. (Originally specified as Langfuse traces; replaced by the in-database call log.)
 - A second OpenRouter key for free-tier-only access, reserved for the conversation layer when it is built later.
 - Off-host backup configuration for the Postgres database to object storage.
 - Basic operator CLI for running ad-hoc tasks.
@@ -56,7 +55,7 @@ The temptation throughout will be to skip phases or build them out of order. The
 **Phase 0 succeeds when:**
 
 - The application starts cleanly from `docker compose up`.
-- A test LLM call through the client abstraction succeeds and shows up in Langfuse.
+- A test LLM call through the client abstraction succeeds and is recorded in `llm_calls`.
 - A test Postgres query through the application returns expected results, exercising at least the pgvector and AGE extensions.
 - Off-host backups are confirmed running and restorable.
 
@@ -127,7 +126,7 @@ The temptation throughout will be to skip phases or build them out of order. The
 - A scheduled run fetches new content from configured sources every hour without manual intervention for 48 hours straight.
 - The commodities lens extracts signals from real content, with the operator able to read recent extractions and judge whether they're sensible.
 - Tier A clustering correctly groups duplicate Reuters/AP/AFP wire reports as one cluster.
-- Cost per ingestion cycle is tracked in Langfuse and within budget.
+- Cost per ingestion cycle is tracked in `llm_calls` and within budget.
 - An operator review of 50-100 random extractions finds at least 60% of them to be reasonably-extracted signals (not random noise, not hallucinated content).
 
 **Phase 2 does not include:**
@@ -218,7 +217,7 @@ The temptation throughout will be to skip phases or build them out of order. The
 - The periodic disconfirmation pass per `augur-signal-pipeline.md` stage 6: edge selection, challenge prompts, output handling through the applier.
 - A separate disconfirmation cadence (initially weekly) running independently of the main ingestion-extraction-anchoring cycle.
 - Operator review of disconfirmation outputs: which edges were challenged, which were weakened, which survived with `disconfirmation_pass_event` records.
-- Disconfirmation-specific cost and quality dashboards in Langfuse.
+- Disconfirmation-specific cost and quality summaries over `llm_calls`.
 
 **Phase 5 succeeds when:**
 

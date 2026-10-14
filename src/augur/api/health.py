@@ -3,7 +3,7 @@ Health check endpoints.
 
 /health        — liveness probe (returns 200 if the process is running)
 /health/db     — DB readiness check (exercises pgvector, pg_trgm, PostGIS, AGE)
-/health/llm    — LLM connectivity check (Langfuse reachable, keys configured)
+/health/llm    — LLM check (call log writable-ready, keys configured, today's spend)
 /health/ready  — full readiness check combining db + llm
 """
 
@@ -92,9 +92,9 @@ async def db_health() -> dict[str, Any]:
 async def llm_health(
     llm_client=Depends(_get_llm_client),
 ) -> dict[str, Any]:
-    """Check Langfuse reachability and confirm both OpenRouter keys are configured."""
+    """Check the call log is readable and both OpenRouter keys are configured."""
     result = await llm_client.health_check()
-    if not result.get("langfuse_reachable") or not result.get("main_key_configured"):
+    if not result.get("call_log_available") or not result.get("main_key_configured"):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=result,
@@ -106,7 +106,7 @@ async def llm_health(
 async def readiness(
     llm_client=Depends(_get_llm_client),
 ) -> dict[str, Any]:
-    """Full readiness check: DB + LLM + Langfuse."""
+    """Full readiness check: DB + LLM."""
     db_result = await db_health()
     llm_result = await llm_client.health_check()
     return {"db": db_result, "llm": llm_result, "status": "ready"}

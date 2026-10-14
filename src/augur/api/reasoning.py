@@ -57,7 +57,7 @@ async def reasoning_node(
         node_row = await conn.fetchrow(
             """
             SELECT node_id, node_type, name, description, type_data,
-                   created_from, langfuse_trace_ids, created_at, updated_at
+                   created_from, llm_call_ids, created_at, updated_at
             FROM nodes WHERE node_id = $1
             """,
             node_id,
@@ -137,7 +137,7 @@ async def reasoning_node(
             "description": node_row["description"],
             "type_data": safe_json(node_row["type_data"]),
             "created_at": node_row["created_at"].isoformat() if node_row["created_at"] else None,
-            "langfuse_trace_ids": list(node_row["langfuse_trace_ids"] or []),
+            "llm_call_ids": list(node_row["llm_call_ids"] or []),
         },
         "edges": [
             {
@@ -202,7 +202,7 @@ async def reasoning_edge(
                    e.supporting_signals, e.disconfirming_signals,
                    e.last_disconfirmation_pass,
                    e.created_at, e.deprecated, e.deprecated_at,
-                   e.langfuse_trace_ids,
+                   e.llm_call_ids,
                    sn.node_id AS source_id, sn.name AS source_name,
                    sn.node_type AS source_type, sn.description AS source_desc,
                    tn.node_id AS target_id, tn.name AS target_name,
@@ -301,7 +301,7 @@ async def reasoning_edge(
             "deprecated": edge_row["deprecated"],
             "last_disconfirmation_pass": edge_row["last_disconfirmation_pass"].isoformat() if edge_row["last_disconfirmation_pass"] else None,
             "created_at": edge_row["created_at"].isoformat() if edge_row["created_at"] else None,
-            "langfuse_trace_ids": list(edge_row["langfuse_trace_ids"] or []),
+            "llm_call_ids": list(edge_row["llm_call_ids"] or []),
         },
         "source_node": {
             "node_id": str(edge_row["source_id"]),

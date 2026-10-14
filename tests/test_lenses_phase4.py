@@ -218,7 +218,7 @@ def _make_llm_mock(content: str = "[]"):
     response.model = "test"
     response.prompt_tokens = 100
     response.completion_tokens = 20
-    response.langfuse_trace_id = "trace-x"
+    response.call_id = "trace-x"
 
     llm = AsyncMock()
     llm.complete = AsyncMock(return_value=response)
@@ -485,7 +485,7 @@ class TestExtractAllLenses:
         response.model = "test"
         response.prompt_tokens = 10
         response.completion_tokens = 5
-        response.langfuse_trace_id = "t"
+        response.call_id = "t"
 
         llm = AsyncMock()
         llm.complete = AsyncMock(return_value=response)

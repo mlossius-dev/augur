@@ -108,7 +108,7 @@ class Applier:
         content_timestamp: datetime,
         source: str = "anchoring",
         triggered_by: list[UUID] | None = None,
-        langfuse_trace_ids: list[str] | None = None,
+        llm_call_ids: list[str] | None = None,
     ) -> ApplierResult:
         """
         Apply a batch of proposed anchor operations.
@@ -120,13 +120,13 @@ class Applier:
                                This is the replay-mode anchor — NOT now().
             source: One of anchoring | disconfirmation | operator_override | seed.
             triggered_by: Signal IDs that drove these operations.
-            langfuse_trace_ids: Langfuse trace IDs from the calling LLM stage.
+            llm_call_ids: llm_calls IDs of the LLM calls behind this batch.
 
         Returns:
             ApplierResult with applied and rejected events.
         """
         _triggered_by = triggered_by or []
-        _trace_ids = langfuse_trace_ids or []
+        _call_ids = llm_call_ids or []
 
         log.info(
             "applier.batch_start",
@@ -157,7 +157,7 @@ class Applier:
                         content_timestamp=content_timestamp,
                         source=source,
                         triggered_by=_triggered_by,
-                        langfuse_trace_ids=_trace_ids,
+                        llm_call_ids=_call_ids,
                     )
                     (result.applied if not event.rejected else result.rejected).append(event)
 
@@ -178,7 +178,7 @@ class Applier:
                         content_timestamp=content_timestamp,
                         source=source,
                         triggered_by=_triggered_by,
-                        langfuse_trace_ids=_trace_ids,
+                        llm_call_ids=_call_ids,
                     )
                     (result.applied if not event.rejected else result.rejected).append(event)
 
@@ -283,7 +283,7 @@ class Applier:
         content_timestamp: datetime,
         source: str,
         triggered_by: list[UUID],
-        langfuse_trace_ids: list[str],
+        llm_call_ids: list[str],
     ) -> GraphUpdateEvent:
         # Validate node_type
         if op.node_type not in set(NodeType):
@@ -330,7 +330,7 @@ class Applier:
             """
             INSERT INTO nodes
                 (node_id, node_type, name, description, type_data,
-                 created_from, langfuse_trace_ids, created_at, updated_at)
+                 created_from, llm_call_ids, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
             """,
             node_id,
@@ -339,7 +339,7 @@ class Applier:
             description,
             json.dumps(self._extract_type_data(op.node_type, op.fields)),
             triggered_by,
-            langfuse_trace_ids,
+            llm_call_ids,
             content_timestamp,
         )
 
@@ -547,7 +547,7 @@ class Applier:
         content_timestamp: datetime,
         source: str,
         triggered_by: list[UUID],
-        langfuse_trace_ids: list[str],
+        llm_call_ids: list[str],
     ) -> GraphUpdateEvent:
         # Validate edge_type
         if op.edge_type not in set(EdgeType):
@@ -581,7 +581,7 @@ class Applier:
             INSERT INTO edges
                 (edge_id, source_node_id, target_node_id, edge_type,
                  current_weight_band, reasoning, falsification_criteria,
-                 created_from, langfuse_trace_ids, created_at, updated_at)
+                 created_from, llm_call_ids, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
             """,
             edge_id,
@@ -592,7 +592,7 @@ class Applier:
             op.reasoning,
             op.falsification_criteria,
             triggered_by,
-            langfuse_trace_ids,
+            llm_call_ids,
             content_timestamp,
         )
 

@@ -41,11 +41,11 @@ def _run(coro):  # type: ignore[no-untyped-def]
 def status() -> None:
     """
     Print the health status of all infrastructure components:
-    database (pgvector + AGE), Langfuse, OpenRouter keys.
+    database (pgvector + AGE), the LLM call log, OpenRouter keys.
 
     Corresponds to Phase 0 success criteria:
       - DB returns expected results exercising pgvector and AGE.
-      - LLM call through the client abstraction shows up in Langfuse.
+      - LLM call through the client abstraction is recorded in llm_calls.
     """
     _run(_status_async())
 
@@ -78,13 +78,12 @@ async def _status_async() -> None:
                 mark = "✓" if ext in found else "✗"
                 typer.echo(f"  {mark} {ext}")
 
-        await close_db()
         typer.secho("  Database: OK", fg=typer.colors.GREEN)
     except Exception as exc:
         typer.secho(f"  Database: FAILED — {exc}", fg=typer.colors.RED)
 
     # ── LLM client ────────────────────────────────────────────────────────────
-    typer.echo("\n[LLM / Langfuse]")
+    typer.echo("\n[LLM]")
     try:
         client = LLMClient.from_settings(settings)
         health = await client.health_check()
@@ -95,6 +94,7 @@ async def _status_async() -> None:
     except Exception as exc:
         typer.secho(f"  LLM client: FAILED — {exc}", fg=typer.colors.RED)
 
+    await close_db()
     typer.echo()
 
 
@@ -182,7 +182,7 @@ def llm_test(
     """
     Make a test LLM call through the client abstraction.
 
-    Phase 0 success criterion: a test call shows up in Langfuse.
+    Phase 0 success criterion: a test call is recorded in llm_calls.
 
     The call uses the cheapest model for the selected stage.
     """
@@ -191,6 +191,7 @@ def llm_test(
 
 async def _llm_test_async(stage_str: str, prompt: str) -> None:
     from augur.config import get_settings
+    from augur.db.connection import close_db, init_db
     from augur.llm.client import LLMClient
     from augur.llm.models import PipelineStage
 
@@ -207,6 +208,7 @@ async def _llm_test_async(stage_str: str, prompt: str) -> None:
         )
         raise typer.Exit(1)
 
+    await init_db(settings)
     client = LLMClient.from_settings(settings)
     typer.echo(f"Calling OpenRouter stage={stage} model={client.model_for_stage(stage)} …")
 
@@ -222,11 +224,187 @@ async def _llm_test_async(stage_str: str, prompt: str) -> None:
         typer.echo(f"\n  model            : {response.model}")
         typer.echo(f"  prompt_tokens    : {response.prompt_tokens}")
         typer.echo(f"  completion_tokens: {response.completion_tokens}")
-        typer.secho(f"  langfuse_trace   : {response.langfuse_trace_id}", fg=typer.colors.CYAN)
+        typer.echo(f"  cost_usd         : {response.cost_usd}")
+        typer.secho(f"  call_id          : {response.call_id}", fg=typer.colors.CYAN)
         typer.secho("\nLLM test: OK", fg=typer.colors.GREEN)
     except Exception as exc:
         typer.secho(f"\nLLM test FAILED: {exc}", fg=typer.colors.RED)
         raise typer.Exit(1)
+    finally:
+        await close_db()
+
+
+# ── augur llm-calls ──────────────────────────────────────────────────────────
+
+
+@app.command("llm-calls")
+def llm_calls(
+    limit: Annotated[int, typer.Option("--limit")] = 20,
+    stage: Annotated[str | None, typer.Option("--stage")] = None,
+    template: Annotated[str | None, typer.Option("--template", help="prompt_template_id")] = None,
+    status: Annotated[
+        str | None, typer.Option("--status", help="ok | error | pending")
+    ] = None,
+    since_hours: Annotated[float, typer.Option("--since-hours")] = 24.0,
+    summary: Annotated[
+        bool,
+        typer.Option(
+            "--summary", help="Aggregate by stage, template and model instead of listing calls"
+        ),
+    ] = False,
+) -> None:
+    """
+    List recent LLM calls from llm_calls, or summarise cost, tokens, latency
+    and failures by stage, prompt template and model.
+
+    `augur llm-call <call_id>` shows one call in full.  For anything else,
+    llm_calls is a plain table: query it with `augur db-query` or psql.
+    """
+    _run(_llm_calls_async(limit, stage, template, status, since_hours, summary))
+
+
+async def _llm_calls_async(
+    limit: int,
+    stage: str | None,
+    template: str | None,
+    status: str | None,
+    since_hours: float,
+    summary: bool,
+) -> None:
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    where = """
+        called_at >= now() - make_interval(secs => $1)
+        AND ($2::text IS NULL OR stage = $2)
+        AND ($3::text IS NULL OR prompt_template_id = $3)
+        AND ($4::text IS NULL OR status = $4)
+    """
+    args = (since_hours * 3600, stage, template, status)
+
+    try:
+        if summary:
+            rows = await pool.fetch(
+                f"""
+                SELECT stage, prompt_template_id, model,
+                       count(*)                                        AS calls,
+                       count(*) FILTER (WHERE status <> 'ok')          AS failed,
+                       COALESCE(sum(prompt_tokens), 0)                 AS prompt_tokens,
+                       COALESCE(sum(completion_tokens), 0)             AS completion_tokens,
+                       COALESCE(sum(cost_usd), 0)                      AS cost_usd,
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)  AS p50_ms,
+                       percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_ms
+                  FROM llm_calls
+                 WHERE {where}
+                 GROUP BY 1, 2, 3
+                 ORDER BY cost_usd DESC, calls DESC
+                """,
+                *args,
+            )
+            typer.secho(f"\nLLM calls, last {since_hours:g}h, by stage/template/model\n", bold=True)
+            total = sum(r["cost_usd"] for r in rows)
+            for r in rows:
+                failed = r["failed"]
+                typer.secho(
+                    f"  {r['stage']} / {r['prompt_template_id']} / {r['model']}",
+                    fg=typer.colors.RED if failed else None,
+                )
+                p50 = f"{r['p50_ms']:.0f}" if r["p50_ms"] is not None else "-"
+                p95 = f"{r['p95_ms']:.0f}" if r["p95_ms"] is not None else "-"
+                typer.echo(
+                    f"    calls={r['calls']} failed={failed} "
+                    f"tokens={r['prompt_tokens']}+{r['completion_tokens']} "
+                    f"cost=${r['cost_usd']:.4f} p50={p50}ms p95={p95}ms"
+                )
+            typer.secho(f"\n  Total cost: ${total:.4f}\n", bold=True)
+            return
+
+        rows = await pool.fetch(
+            f"""
+            SELECT call_id, called_at, status, stage, prompt_template_id, model,
+                   prompt_tokens, completion_tokens, cost_usd, latency_ms,
+                   error, metadata
+              FROM llm_calls
+             WHERE {where}
+             ORDER BY called_at DESC
+             LIMIT $5
+            """,
+            *args,
+            limit,
+        )
+        typer.secho(f"\nLLM calls, last {since_hours:g}h: {len(rows)} shown\n", bold=True)
+        for r in rows:
+            color = {"ok": typer.colors.GREEN, "error": typer.colors.RED}.get(
+                r["status"], typer.colors.YELLOW
+            )
+            typer.secho(
+                f"  [{r['status']}] {r['call_id']}  {r['called_at']:%Y-%m-%d %H:%M:%S}",
+                fg=color,
+            )
+            cost = f"${r['cost_usd']:.4f}" if r["cost_usd"] is not None else "?"
+            typer.echo(
+                f"    {r['stage']} / {r['prompt_template_id']} / {r['model']}  "
+                f"tokens={r['prompt_tokens']}+{r['completion_tokens']} "
+                f"cost={cost} latency={r['latency_ms']}ms"
+            )
+            if r["metadata"] and r["metadata"] != "{}":
+                typer.echo(f"    metadata: {r['metadata'][:160]}")
+            if r["error"]:
+                typer.secho(f"    error: {r['error'][:200]}", fg=typer.colors.RED)
+        typer.echo("")
+    finally:
+        await close_db()
+
+
+@app.command("llm-call")
+def llm_call(
+    call_id: Annotated[str, typer.Argument(help="call_id from llm-calls or a graph node/edge")],
+) -> None:
+    """Show one LLM call in full: input messages, output, usage and context."""
+    _run(_llm_call_async(call_id))
+
+
+async def _llm_call_async(call_id: str) -> None:
+    from uuid import UUID
+
+    from augur.config import get_settings
+    from augur.db.connection import close_db, get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    pool = get_raw_pool()
+
+    try:
+        try:
+            key = UUID(call_id)
+        except ValueError:
+            typer.secho(f"Not a call_id: {call_id}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        row = await pool.fetchrow("SELECT * FROM llm_calls WHERE call_id = $1", key)
+        if row is None:
+            typer.secho(f"No LLM call with call_id {call_id}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        record = dict(row)
+        messages = json.loads(record.pop("messages"))
+        output = record.pop("output")
+        record["metadata"] = json.loads(record["metadata"])
+        for key_, value in record.items():
+            typer.echo(f"  {key_:<20}: {value}")
+        typer.secho("\nMessages:", bold=True)
+        for m in messages:
+            typer.secho(f"  [{m.get('role')}]", fg=typer.colors.CYAN)
+            typer.echo(f"  {m.get('content')}")
+        typer.secho("\nOutput:", bold=True)
+        typer.echo(f"  {output}")
+    finally:
+        await close_db()
 
 
 # ── augur db query ────────────────────────────────────────────────────────────

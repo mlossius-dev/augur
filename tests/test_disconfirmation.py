@@ -280,7 +280,7 @@ def _make_llm_mock(outcome: str = "not_found", reasoning: str = "No evidence fou
     response.model = "claude-opus-4"
     response.prompt_tokens = 500
     response.completion_tokens = 100
-    response.langfuse_trace_id = "trace-disconf-001"
+    response.call_id = "trace-disconf-001"
 
     llm = AsyncMock()
     llm.complete = AsyncMock(return_value=response)
@@ -333,7 +333,7 @@ class TestChallengeEdge:
         pool = _make_pool_mock()
         response = MagicMock()
         response.content = llm_content
-        response.langfuse_trace_id = "trace-x"
+        response.call_id = "trace-x"
 
         llm = AsyncMock()
         llm.complete = AsyncMock(return_value=response)
@@ -401,7 +401,7 @@ class TestChallengeEdge:
         pool = _make_pool_mock()
         response = MagicMock()
         response.content = content
-        response.langfuse_trace_id = "trace-found"
+        response.call_id = "trace-found"
 
         llm = AsyncMock()
         llm.complete = AsyncMock(return_value=response)
@@ -454,4 +454,4 @@ class TestEdgeChallengeResult:
         assert er.n_operations_applied == 0
         assert er.n_operations_rejected == 0
         assert er.llm_error is None
-        assert er.langfuse_trace_id is None
+        assert er.llm_call_id is None

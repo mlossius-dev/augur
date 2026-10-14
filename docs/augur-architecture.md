@@ -33,12 +33,13 @@ The architecture is not designed to scale to many users. It is designed to run r
 
 ### Existing infrastructure on the VPS
 
-Two services are already running on the target VPS and are treated as architectural dependencies rather than things Augur deploys itself:
+One service is already running on the target host and is treated as an architectural dependency rather than something Augur deploys itself:
 
 - **SearXNG** — meta-search instance used by the ingestion layer for general-purpose web search across regions and language pools. Source-registry and search-strategy details live in `augur-sources.md`.
-- **Langfuse** — LLM observability platform. Used as the trace and cost backbone for every LLM call from Augur. See the observability section below.
 
-Both are treated as stable infrastructure. If either becomes unavailable, ingestion (for SearXNG) or introspection (for Langfuse) degrades, but the rest of the system continues to operate against its existing graph state.
+It is treated as stable infrastructure. If it becomes unavailable, ingestion degrades, but the rest of the system continues to operate against its existing graph state.
+
+LLM observability needs no separate service: every LLM call is recorded in Augur's own database (see the observability section below). An earlier design used Langfuse for this; it was dropped to keep the host to one database and because the useful questions about LLM calls are joins against the graph.
 
 ---
 
@@ -196,7 +197,7 @@ Three viable options:
 - Logs every call (model, prompt template ID, input tokens, output tokens, cost, latency, response).
 - Supports per-stage model selection (cheap model for lens extraction, stronger model for anchoring and disconfirmation).
 - Implements retries with exponential backoff, structured-output validation, and fallback model routing.
-- **Emits traces to Langfuse** (running on the same VPS) for every call. See the observability section below.
+- **Records every call in `llm_calls`** before making it, and completes the row afterwards. See the observability section below.
 
 Model selection is a **runtime configuration concern**, not an architectural one. The system should support swapping models per stage without code changes. As of writing, the rough mapping is:
 
@@ -312,14 +313,15 @@ The interesting design property: because projection is cheap to re-run and the g
 
 A single-operator system needs strong introspection. The architecture commits to:
 
-- **Langfuse is the LLM observability backbone.** Already running on the same VPS. Every LLM call from any stage emits a trace to Langfuse with the prompt template ID, model, tokens, cost, latency, structured response, and outcome (used / rejected). Multi-step operations (a single article producing N lens extractions, or a single anchoring batch producing M graph update events) are linked as nested traces so the full causal chain is navigable in the Langfuse UI.
-- **Trace metadata is structured for filtering.** Every trace carries tags identifying the stage (`extraction`, `anchoring`, `disconfirmation`, `projection`), the lens or component, the source ID where applicable, and the signal IDs or event IDs produced. This makes it possible to ask Langfuse questions like *"show me all extraction calls from Indian sources last week that produced zero signals"* without writing custom queries against the application database.
-- **Cost tracking lives in Langfuse, not in application code.** Per-stage and per-model cost dashboards are built in the Langfuse UI rather than reimplemented inside Augur. The application records cost only for budget enforcement at the call site (rejecting calls that would exceed configured daily limits).
-- **Every graph update event is auditable** to its triggering signals and from there to its source payloads. This audit chain lives in the application database (Tier B), independently of Langfuse, because it must survive even if Langfuse is unavailable or its retention expires.
-- **A small operator UI or CLI** for the operator to inspect recent extractions, recent anchoring events, recent disconfirmation results, and recent cost summaries. This is not the user-facing graph UI; it is the maintenance interface. It cross-links to Langfuse traces for any LLM-related drill-down.
-- **A "why does Augur think this?" trace** available for any node or edge: list of supporting signals, list of source payloads, list of disconfirmation passes that examined it, current weight and weight history. Where the supporting reasoning involved an LLM call, the trace links to the corresponding Langfuse trace.
+- **`llm_calls` is the LLM observability backbone.** Every LLM call from any stage is recorded in the `llm_calls` table with the stage, prompt template ID, model, the caller's entity IDs (payload, signal, lens, edge, ...), the full input messages, the output, tokens, cost as reported by OpenRouter, latency, attempts and outcome. The row is written *before* the call is made: if it cannot be written, the call is not made, so there are no unrecorded calls.
+- **Analysis is SQL next to the graph.** Because calls live in the same database as signals and graph update events, questions like *"show me all extraction calls from Indian sources last week that produced zero signals"* or *"which prompt template produces the most rejected anchors"* are joins, not exports. `augur llm-calls` lists and summarises calls (cost, tokens, p50/p95 latency and failures by stage, template and model); `augur llm-call <id>` shows one in full.
+- **Budget enforcement reads the same table.** The daily cap is the sum of today's reported costs for budgeted calls, so it holds across the API server, the scheduler and the CLI, and survives restarts. A budgeted call whose cost OpenRouter does not report is an error: an unmetered call is a budget leak.
+- **Every graph update event is auditable** to its triggering signals and from there to its source payloads, and to the LLM calls involved: nodes and edges carry `llm_call_ids`, and disconfirmation pass events carry `llm_call_id`.
+- **OpenRouter Broadcast is optional and additive.** Every request carries OpenRouter's `trace` field with `trace_id` set to the `llm_calls.call_id`, the stage and the prompt template ID. If Broadcast is switched on (OpenRouter dashboard), its traces can be sent to any OpenTelemetry-compatible tool and still join back to Augur's records.
+- **A small operator UI or CLI** for the operator to inspect recent extractions, recent anchoring events, recent disconfirmation results, and recent cost summaries. This is not the user-facing graph UI; it is the maintenance interface.
+- **A "why does Augur think this?" trace** available for any node or edge: list of supporting signals, list of source payloads, list of disconfirmation passes that examined it, current weight and weight history, and the LLM calls behind it.
 
-The architectural commitment is that Augur does not reimplement what Langfuse already does well. The application owns the *what* (signals, events, graph state) and Langfuse owns the *how* (LLM call history, prompt versions, cost analytics, latency distributions). The two are linked by trace IDs stored as columns on application records.
+The architectural commitment is that every LLM call is recorded where the graph it shaped can be joined to it. Retention of `llm_calls` (the messages column dominates its size) is an operator decision; graph records keep their `llm_call_ids` even if old call rows are pruned.
 
 ---
 
