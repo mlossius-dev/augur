@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # caps each run, newest payloads first, leaving room for anchoring.
     extraction_calls_per_run: int = 20
 
+    # ── Retention ─────────────────────────────────────────────────────────────
+    # Rejected payloads (duplicates, too short) are deleted after this many
+    # days; accepted payloads are kept (docs/augur-signal-pipeline.md).
+    rejected_payload_retention_days: int = 30
+
     # ── Model routing overrides ───────────────────────────────────────────────
     # Empty = the default in augur.llm.models (openrouter/free for every stage).
     augur_model_extraction: str = ""
