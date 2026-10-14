@@ -20,6 +20,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx2
 import pytest
 from openai.types.chat import ChatCompletion
 
@@ -48,6 +49,15 @@ def _completion(content: str = "ok", *, cost: float | None = 0.0012) -> ChatComp
             "usage": usage,
         }
     )
+
+
+def _status_error(status: int) -> Exception:
+    """The SDK error OpenRouter's HTTP status turns into."""
+    import openai
+
+    request = httpx2.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    response = httpx2.Response(status, request=request)
+    return openai.APIStatusError(f"HTTP {status}", response=response, body=None)
 
 
 @pytest.fixture
@@ -180,6 +190,40 @@ class TestCallRecording:
         assert "upstream 502" in end.error
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [400, 401, 402, 403, 404])
+    async def test_client_errors_are_not_retried(self, client, monkeypatch, status) -> None:
+        # A 401 (key expired) or 402 (negative balance) fails the same way
+        # every time; each retry would only spend free-tier quota.
+        from augur.llm import client as client_module
+        from augur.llm.client import LLMCallError
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", AsyncMock())
+        main_create, _ = _stub(client, main=AsyncMock(side_effect=_status_error(status)))
+
+        with pytest.raises(LLMCallError):
+            await _complete(client, max_retries=3)
+
+        assert main_create.call_count == 1
+        [(_, end, _)] = client._call_log.calls.values()
+        assert end.attempts == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_transient_errors_are_retried(self, client, monkeypatch, status) -> None:
+        from augur.llm import client as client_module
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", AsyncMock())
+        main_create, _ = _stub(
+            client, main=AsyncMock(side_effect=[_status_error(status), _completion()])
+        )
+
+        response = await _complete(client, max_retries=3)
+
+        assert main_create.call_count == 2
+        _, end, _ = client._call_log.calls[UUID(response.call_id)]
+        assert (end.status, end.attempts) == ("ok", 2)
+
+    @pytest.mark.asyncio
     async def test_unreported_cost_on_budgeted_call_raises(self, client) -> None:
         from augur.llm.client import LLMCostUnreportedError
 
@@ -302,6 +346,25 @@ class TestCallQuota:
                 await _complete(quota_client, max_retries=1)
         with pytest.raises(LLMQuotaExceededError):
             await _complete(quota_client, max_retries=1)
+
+    @pytest.mark.asyncio
+    async def test_every_attempt_counts_against_the_quota(
+        self, quota_client, monkeypatch
+    ) -> None:
+        # OpenRouter counts requests, not logical calls: one call that took
+        # two attempts uses the whole quota of 2.
+        from augur.llm import client as client_module
+        from augur.llm.client import LLMQuotaExceededError
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", AsyncMock())
+        main_create, _ = _stub(
+            quota_client, main=AsyncMock(side_effect=[_status_error(503), _completion()])
+        )
+        await _complete(quota_client, max_retries=2)
+
+        with pytest.raises(LLMQuotaExceededError):
+            await _complete(quota_client)
+        assert main_create.call_count == 2
 
     @pytest.mark.asyncio
     async def test_quota_applies_to_free_tier_stages_too(self, quota_client) -> None:

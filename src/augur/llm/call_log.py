@@ -8,7 +8,7 @@ model and prompt template) in one table next to the graph it explains.
 
 The same table feeds the daily budget and the call quota: spend is the sum of
 today's reported costs for budgeted (non-free-tier) calls, and the quota counts
-every call started, so both hold across the API server, the scheduler and the
+every attempt of every call started, so both hold across the API server, the scheduler and the
 CLI, and survive restarts.
 
 The in-memory log exists for tests and single-process tools.
@@ -133,7 +133,10 @@ class PostgresCallLog:
 
     async def calls_since(self, since: datetime) -> int:
         return await self._get_pool().fetchval(
-            "SELECT count(*) FROM llm_calls WHERE called_at >= $1", since
+            # OpenRouter counts every attempt; a call still in flight counts once
+            "SELECT COALESCE(sum(GREATEST(attempts, 1)), 0) FROM llm_calls"
+            " WHERE called_at >= $1",
+            since,
         )
 
     async def budgeted_spend_for(self, day: date) -> Decimal:
@@ -163,7 +166,11 @@ class InMemoryCallLog:
         self.calls[call_id] = (start, end, called_at)
 
     async def calls_since(self, since: datetime) -> int:
-        return sum(1 for _, _, called_at in self.calls.values() if called_at >= since)
+        return sum(
+            max(end.attempts if end else 0, 1)
+            for _, end, called_at in self.calls.values()
+            if called_at >= since
+        )
 
     async def budgeted_spend_for(self, day: date) -> Decimal:
         total = Decimal(0)

@@ -20,11 +20,12 @@ A thin abstraction over OpenRouter that enforces three invariants:
    cost OpenRouter does not report raises LLMCostUnreportedError: an
    unmetered call is a budget leak, and leaks must be loud.
 
-A call quota caps how many calls start per UTC day and per minute, counted
-from `llm_calls` (failed calls included, as OpenRouter counts them).  It exists
-for OpenRouter's free tier, which limits requests per account rather than
-spend.  Over the daily quota the client raises LLMQuotaExceededError; over the
-per-minute rate it waits.
+A call quota caps how many requests start per UTC day and per minute, counted
+from `llm_calls` as attempts (failed ones included, as OpenRouter counts them).
+It exists for OpenRouter's free tier, which limits requests per account rather
+than spend.  Over the daily quota the client raises LLMQuotaExceededError; over
+the per-minute rate it waits.  Only transient errors (429, 5xx, connection) are
+retried: a 401, 402 or 400 fails the same way again and only spends quota.
 
 Each request also carries OpenRouter's `trace` field (trace_id = our call_id),
 so if OpenRouter Broadcast is switched on, its traces join back to llm_calls.
@@ -52,7 +53,7 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
-from openai import AsyncOpenAI, RateLimitError
+from openai import APIStatusError, AsyncOpenAI, RateLimitError
 
 from augur.config import Settings, get_settings
 from augur.llm.call_log import CallLog, LLMCallEnd, LLMCallStart, PostgresCallLog
@@ -72,6 +73,17 @@ class LLMBudgetExceededError(Exception):
 
 class LLMQuotaExceededError(LLMBudgetExceededError):
     """Raised when the daily LLM call quota has been reached."""
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Whether retrying could help: rate limits, 5xx and connection errors.
+
+    A 4xx such as 401 (key expired), 402 (negative balance) or 400 fails the
+    same way every time, and each attempt counts against the free-tier quota.
+    """
+    if isinstance(exc, APIStatusError):
+        return exc.status_code == 429 or exc.status_code >= 500
+    return True
 
 
 class LLMCallError(Exception):
@@ -206,7 +218,7 @@ class LLMClient:
             metadata: Key/value pairs recorded with the call.  Should include
                       entity IDs relevant to the call (payload_id, signal_id,
                       lens_id, etc.).
-            max_retries: Number of attempts on transient errors.
+            max_retries: Maximum attempts; only transient errors are retried.
             temperature: Sampling temperature (kept low for structured extraction).
 
         Returns:
@@ -283,6 +295,8 @@ class LLMClient:
                     error=str(exc),
                     call_id=str(call_id),
                 )
+                if not _is_transient(exc):
+                    break
                 if attempts < max_retries:
                     await asyncio.sleep(2**attempt)
 
@@ -300,7 +314,7 @@ class LLMClient:
             )
             raise LLMCallError(
                 f"LLM call for stage={stage} model={model} failed after "
-                f"{max_retries} attempts: {last_error}"
+                f"{attempts} attempt(s): {last_error}"
             ) from last_error
 
         content = response.choices[0].message.content or ""
