@@ -260,6 +260,24 @@ async def _dimension_notes_job(app_state: Any) -> None:
         log.error("scheduler.dimension_notes_failed", error=str(exc))
 
 
+async def _prune_rejected_payloads_job(app_state: Any) -> None:
+    """Daily: delete rejected payloads older than the retention window."""
+    from augur.config import get_settings
+    from augur.ingestion.retention import prune_rejected_payloads
+    from augur.monitoring.health import log_job_complete, log_job_start
+
+    pool = app_state.raw_pool
+    log_id = await log_job_start(pool, "prune_rejected_payloads")
+    try:
+        deleted = await prune_rejected_payloads(
+            pool, retention_days=get_settings().rejected_payload_retention_days
+        )
+        await log_job_complete(pool, log_id, n_processed=deleted)
+    except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
+        log.error("scheduler.prune_rejected_payloads_failed", error=str(exc))
+
+
 async def _prune_sessions_job(app_state: Any) -> None:
     """Weekly session pruning: remove stale conversation sessions."""
     from augur.conversation.session import prune_sessions
@@ -417,6 +435,18 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=CronTrigger(day_of_week="sun", hour=7, minute=0, timezone="UTC"),
         id="prune_sessions",
         name="Prune stale conversation sessions",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # Rejected-payload retention: daily, 03:30 UTC
+    scheduler.add_job(
+        func=_prune_rejected_payloads_job,
+        args=[app_state],
+        trigger=CronTrigger(hour=3, minute=30, timezone="UTC"),
+        id="prune_rejected_payloads",
+        name="Prune rejected payloads past retention",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,

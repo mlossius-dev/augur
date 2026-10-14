@@ -117,6 +117,8 @@ The distinction between `fetched_at` and `content_timestamp` is the foundation o
 
 Rejected payloads are still archived with a `rejected_reason` flag — useful for tuning the de-spam logic later.
 
+**Retention of rejected payloads (operator decision, October 2026).** Accepted payloads are kept indefinitely, as above. Rejected ones are deleted from the database after `REJECTED_PAYLOAD_RETENTION_DAYS` (default 30) by a daily job. Most rejections are the same headline re-fetched every hour (an exact duplicate) or a feed item too short to read, so they accumulate at hundreds of rows an hour while their tuning value lies in the recent past. Thirty days covers the duplicate window (seven days) several times over; lower it if the table grows large. Rejected payloads are never archived to the filesystem, so nothing outside the database is affected.
+
 ### What ingestion does not do
 
 - It does not interpret content.
