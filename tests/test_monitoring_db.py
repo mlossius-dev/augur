@@ -54,3 +54,13 @@ async def test_anchoring_quality_runs(pool) -> None:
     batches = await get_anchoring_quality(pool, limit=5)
     for batch in batches:
         assert batch["n_events"] == batch["n_applied"] + batch["n_rejected"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_candidates_runs(pool) -> None:
+    from augur.monitoring.duplicates import find_duplicate_candidates
+
+    pairs = await find_duplicate_candidates(pool, min_similarity=0.45, limit=10)
+    for p in pairs:
+        assert p["a"]["node_id"] != p["b"]["node_id"]
+        assert p["same_name"] or p["similarity"] >= 0.45

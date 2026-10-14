@@ -278,6 +278,29 @@ async def _prune_rejected_payloads_job(app_state: Any) -> None:
         log.error("scheduler.prune_rejected_payloads_failed", error=str(exc))
 
 
+async def _duplicate_candidates_job(app_state: Any) -> None:
+    """Weekly: record duplicate-node candidates for operator review (read-only)."""
+    from augur.monitoring.duplicates import find_duplicate_candidates
+    from augur.monitoring.health import log_job_complete, log_job_start
+
+    pool = app_state.raw_pool
+    log_id = await log_job_start(pool, "duplicate_candidates")
+    try:
+        pairs = await find_duplicate_candidates(pool, limit=50)
+        await log_job_complete(
+            pool, log_id, n_processed=len(pairs),
+            metadata={"pairs": [
+                {"a": p["a"]["name"], "b": p["b"]["name"],
+                 "similarity": p["similarity"], "same_name": p["same_name"]}
+                for p in pairs
+            ]},
+        )
+        log.info("scheduler.duplicate_candidates_done", n_pairs=len(pairs))
+    except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
+        log.error("scheduler.duplicate_candidates_failed", error=str(exc))
+
+
 async def _prune_sessions_job(app_state: Any) -> None:
     """Weekly session pruning: remove stale conversation sessions."""
     from augur.conversation.session import prune_sessions
@@ -435,6 +458,18 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=CronTrigger(day_of_week="sun", hour=7, minute=0, timezone="UTC"),
         id="prune_sessions",
         name="Prune stale conversation sessions",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # Duplicate-node candidates for review: weekly, Sunday 05:00 UTC (read-only)
+    scheduler.add_job(
+        func=_duplicate_candidates_job,
+        args=[app_state],
+        trigger=CronTrigger(day_of_week="sun", hour=5, minute=0, timezone="UTC"),
+        id="duplicate_candidates",
+        name="Duplicate-node candidates",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,

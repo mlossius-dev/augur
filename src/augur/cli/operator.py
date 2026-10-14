@@ -1733,6 +1733,44 @@ async def _monitor_signals_async(hours: int) -> None:
         await close_db()
 
 
+@monitor_app.command("duplicates")
+def monitor_duplicates(
+    min_similarity: Annotated[
+        float, typer.Option("--min-similarity", help="Trigram similarity threshold, 0-1")
+    ] = 0.45,
+    limit: Annotated[int, typer.Option("--limit")] = 50,
+) -> None:
+    """
+    Node pairs that may be duplicates, for review. Changes nothing.
+
+    Identical names and shared neighbours make a true duplicate likelier
+    than name similarity alone.
+    """
+    _run(_monitor_duplicates_async(min_similarity, limit))
+
+
+async def _monitor_duplicates_async(min_similarity: float, limit: int) -> None:
+    from augur.monitoring.duplicates import find_duplicate_candidates
+
+    pool, close_db = await _get_pool()
+    try:
+        pairs = await find_duplicate_candidates(pool, min_similarity=min_similarity, limit=limit)
+        typer.secho(f"
+Duplicate candidates — similarity >= {min_similarity}", bold=True)
+        typer.echo("─" * 60)
+        if not pairs:
+            typer.echo("  None.")
+        for p in pairs:
+            a, b = p["a"], p["b"]
+            flag = "SAME NAME" if p["same_name"] else f"{p['similarity']:.2f}"
+            typer.echo(f"  [{flag}] shared neighbours: {p['shared_neighbours']}")
+            typer.echo(f"    {a['type']:<9} {a['name']}  ({a['edges']} edges)  {a['node_id']}")
+            typer.echo(f"    {b['type']:<9} {b['name']}  ({b['edges']} edges)  {b['node_id']}")
+        typer.echo()
+    finally:
+        await close_db()
+
+
 @monitor_app.command("live-calibration")
 def monitor_live_calibration() -> None:
     """
