@@ -88,10 +88,17 @@ class TestModelRouting:
     def test_conversation_is_free_tier(self) -> None:
         assert PipelineStage.CONVERSATION in FREE_TIER_STAGES
 
-    def test_non_conversation_stages_are_not_free_tier(self) -> None:
-        for stage in PipelineStage:
-            if stage != PipelineStage.CONVERSATION:
-                assert stage not in FREE_TIER_STAGES
+    def test_only_conversation_and_digest_are_free_tier(self) -> None:
+        # The free-tier key is for reader-facing text that must cost nothing:
+        # the conversation layer and the dimension digest notes. Pipeline
+        # stages that write the graph always use the budgeted key.
+        assert FREE_TIER_STAGES == {PipelineStage.CONVERSATION, PipelineStage.DIGEST}
+
+    def test_free_tier_stages_route_to_free_models(self) -> None:
+        from augur.llm.models import DEFAULT_MODEL_ROUTING
+
+        for stage in FREE_TIER_STAGES:
+            assert DEFAULT_MODEL_ROUTING[stage].endswith(":free"), stage
 
 
 class TestCallRecording:
