@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     prompt_tokens       INTEGER,
     completion_tokens   INTEGER,
     -- As reported by OpenRouter (usage.cost); NULL when not reported
-    cost_usd            NUMERIC(12, 6),
+    cost_usd            NUMERIC(16, 10),
     latency_ms          INTEGER
 );
 
