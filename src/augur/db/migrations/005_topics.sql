@@ -70,6 +70,6 @@ VALUES
      -10.0, 55.0, 95.0, 150.0),
 
     ('global', 'Global', ARRAY['us_eu','india','china','russia','gulf','southeast_asia_pacific'],
-     ARRAY[],
+     ARRAY[]::text[],
      -90.0, 90.0, -180.0, 180.0)
 ON CONFLICT (region_id) DO NOTHING;
