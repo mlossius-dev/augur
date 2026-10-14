@@ -564,3 +564,44 @@ class TestSearxngFetcher:
 
         assert len(results) == 2
         assert "wheat" in results[0].raw_content.lower()
+
+
+class TestSearxngPublishedDate:
+    def test_iso_without_zone_is_utc(self):
+        from augur.ingestion.fetchers.searxng import parse_published_date
+
+        assert parse_published_date("2026-10-05T15:33:00") == datetime(
+            2026, 10, 5, 15, 33, tzinfo=timezone.utc
+        )
+
+    def test_iso_with_zone_keeps_it(self):
+        from augur.ingestion.fetchers.searxng import parse_published_date
+
+        parsed = parse_published_date("2026-10-05T15:33:00+02:00")
+        assert parsed == datetime(2026, 10, 5, 13, 33, tzinfo=timezone.utc)
+
+    def test_rfc_2822_still_parses(self):
+        from augur.ingestion.fetchers.searxng import parse_published_date
+
+        parsed = parse_published_date("Mon, 05 Oct 2026 15:33:00 GMT")
+        assert parsed == datetime(2026, 10, 5, 15, 33, tzinfo=timezone.utc)
+
+    def test_missing_or_garbage_is_none(self):
+        from augur.ingestion.fetchers.searxng import parse_published_date
+
+        assert parse_published_date(None) is None
+        assert parse_published_date("yesterday") is None
+
+
+def test_every_searxng_query_has_a_topic():
+    # The fetcher skips a query without `topic`; two sources once used
+    # `query:` and fetched nothing.
+    from augur.ingestion.source_registry import load_sources
+
+    for source in load_sources():
+        if source.access_method != "searxng":
+            continue
+        queries = source.access_config.get("queries", [])
+        assert queries, source.source_id
+        for q in queries:
+            assert q.get("topic"), f"{source.source_id}: {q}"

@@ -13,6 +13,7 @@ snippet signals are strong enough to warrant it (Phase 3+).
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -22,6 +23,26 @@ import structlog
 from augur.ingestion.models import FetchResult, SourceConfig
 
 log = structlog.get_logger(__name__)
+
+
+def parse_published_date(value: Any) -> datetime | None:
+    """
+    A SearXNG result's publishedDate as an aware datetime, or None.
+
+    SearXNG's JSON gives ISO 8601 (`2026-10-05T15:33:00`, usually without a
+    zone, meaning UTC); some engines pass RFC 2822 through.  Unparseable
+    values return None, and the caller falls back to the fetch time.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class SearxngFetcher:
@@ -82,15 +103,7 @@ class SearxngFetcher:
                     if not content:
                         continue
 
-                    # Attempt to parse the result's publishedDate
-                    published_str = item.get("publishedDate")
-                    content_ts: datetime | None = None
-                    if published_str:
-                        try:
-                            from email.utils import parsedate_to_datetime
-                            content_ts = parsedate_to_datetime(published_str)
-                        except Exception:
-                            pass
+                    content_ts = parse_published_date(item.get("publishedDate"))
 
                     results.append(
                         FetchResult(

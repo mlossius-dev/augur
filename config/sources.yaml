@@ -553,10 +553,10 @@ sources:
     access_method: searxng
     access_config:
       queries:
-        - query: "earthquake tsunami port closure shipping disruption"
-          category: news
-        - query: "pipeline explosion refinery fire infrastructure outage"
-          category: news
+        - topic: "earthquake tsunami port closure shipping disruption"
+          categories: ["news"]
+        - topic: "pipeline explosion refinery fire infrastructure outage"
+          categories: ["news"]
       max_results_per_query: 10
     update_cadence: hourly
     domains: [physical_world, commodities]
@@ -609,10 +609,10 @@ sources:
     access_method: searxng
     access_config:
       queries:
-        - query: "sanctions imposed export controls trade restrictions regulation"
-          category: news
-        - query: "court ruling regulatory enforcement antitrust central bank policy"
-          category: news
+        - topic: "sanctions imposed export controls trade restrictions regulation"
+          categories: ["news"]
+        - topic: "court ruling regulatory enforcement antitrust central bank policy"
+          categories: ["news"]
       max_results_per_query: 10
     update_cadence: hourly
     domains: [regulatory, geopolitical]
