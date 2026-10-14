@@ -56,6 +56,22 @@ services:
       OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-}
       OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-eu-central}
       DAILY_LLM_BUDGET_USD: ${DAILY_LLM_BUDGET_USD:-5.00}
+      # OpenRouter free tier: requests per account per day and minute
+      LLM_DAILY_CALL_LIMIT: ${LLM_DAILY_CALL_LIMIT:-800}
+      LLM_CALLS_PER_MINUTE: ${LLM_CALLS_PER_MINUTE:-12}
+      EXTRACTION_CALLS_PER_RUN: ${EXTRACTION_CALLS_PER_RUN:-20}
+      # Empty = openrouter/free (see src/augur/llm/models.py)
+      AUGUR_MODEL_EXTRACTION: ${AUGUR_MODEL_EXTRACTION:-}
+      AUGUR_MODEL_ANCHORING: ${AUGUR_MODEL_ANCHORING:-}
+      AUGUR_MODEL_DISCONFIRMATION: ${AUGUR_MODEL_DISCONFIRMATION:-}
+      AUGUR_MODEL_PROJECTION: ${AUGUR_MODEL_PROJECTION:-}
+      AUGUR_MODEL_CONVERSATION: ${AUGUR_MODEL_CONVERSATION:-}
+      AUGUR_MODEL_DIGEST: ${AUGUR_MODEL_DIGEST:-}
+      # Unset or empty = /api/* is open; set it once anything beyond the host can reach the API
+      AUGUR_API_KEY: ${AUGUR_API_KEY:-}
+      ENABLE_SCHEDULER: ${ENABLE_SCHEDULER:-true}
+      # The payloads volume below; the app default (/data/augur/payloads) is outside it
+      PAYLOAD_ARCHIVE_ROOT: /app/payloads
       AUGUR_ENV: ${AUGUR_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT: ${LOG_FORMAT:-json}

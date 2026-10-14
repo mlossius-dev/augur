@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -94,11 +94,34 @@ class TestModelRouting:
         # stages that write the graph always use the budgeted key.
         assert FREE_TIER_STAGES == {PipelineStage.CONVERSATION, PipelineStage.DIGEST}
 
-    def test_free_tier_stages_route_to_free_models(self) -> None:
-        from augur.llm.models import DEFAULT_MODEL_ROUTING
+    def test_every_stage_defaults_to_a_free_model(self) -> None:
+        # Operator decision (October 2026): free models only, lower quality
+        # accepted. A paid default would silently start billing.
+        from augur.llm.models import DEFAULT_MODEL_ROUTING, is_free_model
 
-        for stage in FREE_TIER_STAGES:
-            assert DEFAULT_MODEL_ROUTING[stage].endswith(":free"), stage
+        for stage in PipelineStage:
+            assert is_free_model(DEFAULT_MODEL_ROUTING[stage]), stage
+
+    def test_overrides_replace_only_the_stages_they_name(self) -> None:
+        from augur.llm.models import DEFAULT_MODEL_ROUTING, routing_from_overrides
+
+        routing = routing_from_overrides(
+            {PipelineStage.ANCHORING: "vendor/model:free", PipelineStage.EXTRACTION: ""}
+        )
+        assert routing[PipelineStage.ANCHORING] == "vendor/model:free"
+        assert routing[PipelineStage.EXTRACTION] == DEFAULT_MODEL_ROUTING[PipelineStage.EXTRACTION]
+
+    def test_overrides_are_read_from_settings(self, minimal_env, monkeypatch) -> None:
+        from augur.config import get_settings
+        from augur.llm.client import LLMClient
+
+        monkeypatch.setenv("AUGUR_MODEL_DISCONFIRMATION", "vendor/strong:free")
+        get_settings.cache_clear()
+        try:
+            client = LLMClient.from_settings(call_log=InMemoryCallLog())
+        finally:
+            get_settings.cache_clear()
+        assert client.model_for_stage(PipelineStage.DISCONFIRMATION) == "vendor/strong:free"
 
 
 class TestCallRecording:
@@ -188,6 +211,18 @@ class TestCallRecording:
         assert extra["trace"]["prompt_template_id"] == "lens_v2"
         assert isinstance(extra["trace"]["signal_ids"], str), "non-scalars are stringified"
 
+    @pytest.mark.asyncio
+    async def test_the_model_that_answered_is_recorded(self, client) -> None:
+        answered = _completion()
+        answered.model = "vendor/picked-by-router:free"
+        _stub(client, main=AsyncMock(return_value=answered))
+
+        response = await _complete(client)
+
+        start, end, _ = client._call_log.calls[UUID(response.call_id)]
+        assert start.model == "openrouter/free"
+        assert end.model == response.model == "vendor/picked-by-router:free"
+
     def test_sdk_retries_are_disabled(self, client) -> None:
         assert client._main_client.max_retries == 0
         assert client._free_client.max_retries == 0
@@ -233,6 +268,81 @@ class TestLLMClientBudget:
         for stage in PipelineStage:
             model = client.model_for_stage(stage)
             assert isinstance(model, str) and model
+
+
+class TestCallQuota:
+    @pytest.fixture
+    def quota_client(self, llm_client_kwargs: dict):
+        from augur.llm.client import LLMClient
+
+        return LLMClient(**llm_client_kwargs, daily_call_limit=2, calls_per_minute=100)
+
+    @pytest.mark.asyncio
+    async def test_daily_quota_refuses_without_calling(self, quota_client) -> None:
+        from augur.llm.client import LLMQuotaExceededError
+
+        main_create, _ = _stub(quota_client)
+        await _complete(quota_client)
+        await _complete(quota_client)
+
+        with pytest.raises(LLMQuotaExceededError):
+            await _complete(quota_client)
+        assert main_create.call_count == 2
+        assert len(quota_client._call_log.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_failed_calls_count_against_the_quota(self, quota_client, monkeypatch) -> None:
+        from augur.llm import client as client_module
+        from augur.llm.client import LLMCallError, LLMQuotaExceededError
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", AsyncMock())
+        _stub(quota_client, main=AsyncMock(side_effect=RuntimeError("upstream 429")))
+        for _ in range(2):
+            with pytest.raises(LLMCallError):
+                await _complete(quota_client, max_retries=1)
+        with pytest.raises(LLMQuotaExceededError):
+            await _complete(quota_client, max_retries=1)
+
+    @pytest.mark.asyncio
+    async def test_quota_applies_to_free_tier_stages_too(self, quota_client) -> None:
+        from augur.llm.client import LLMQuotaExceededError
+
+        _stub(quota_client)
+        await _complete(quota_client, stage=PipelineStage.CONVERSATION)
+        await _complete(quota_client, stage=PipelineStage.DIGEST)
+        with pytest.raises(LLMQuotaExceededError):
+            await _complete(quota_client, stage=PipelineStage.CONVERSATION)
+
+    @pytest.mark.asyncio
+    async def test_per_minute_rate_waits_for_a_free_slot(self, llm_client_kwargs, monkeypatch) -> None:
+        from augur.llm import client as client_module
+        from augur.llm.client import LLMClient
+
+        client = LLMClient(**llm_client_kwargs, calls_per_minute=1)
+        main_create, _ = _stub(client)
+        await _complete(client)
+
+        waits: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            waits.append(seconds)
+            # The minute passes: age the first call out of the window
+            for call_id, (start, end, called_at) in list(client._call_log.calls.items()):
+                client._call_log.calls[call_id] = (start, end, called_at - timedelta(minutes=2))
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", fake_sleep)
+        await _complete(client)
+
+        assert waits, "the second call should have waited"
+        assert main_create.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_health_check_reports_calls_today(self, quota_client) -> None:
+        _stub(quota_client)
+        await _complete(quota_client)
+        result = await quota_client.health_check()
+        assert result["today_calls"] == 1
+        assert result["daily_call_limit"] == 2
 
 
 class TestLLMClientKeyRouting:
@@ -299,11 +409,14 @@ class TestPostgresCallLog:
                 LLMCallEnd(
                     status="ok", attempts=1, latency_ms=42, output="hello",
                     prompt_tokens=3, completion_tokens=1, cost_usd=Decimal("0.5"),
+                    model="vendor/answered:free",
                 ),
             )
             row = await pool.fetchrow("SELECT * FROM llm_calls WHERE call_id = $1", call_id)
             assert row["status"] == "ok"
             assert row["finished_at"] is not None
+            assert row["model"] == "vendor/answered:free"
+            assert await log.calls_since(row["called_at"]) >= 1
             assert json.loads(row["messages"]) == [{"role": "user", "content": "hi"}]
             assert await log.budgeted_spend_for(today) == before + Decimal("0.5")
         finally:
@@ -351,3 +464,19 @@ class TestLLMIntegration:
         _, end, _ = call_log.calls[UUID(response.call_id)]
         assert end is not None and end.status == "ok"
         assert end.cost_usd is not None
+
+
+class TestExtractionCap:
+    def test_keeps_as_many_newest_payloads_as_fit(self) -> None:
+        from augur.scheduler import cap_extraction_payloads
+
+        rows = ["newest", "newer", "older", "oldest"]
+        assert cap_extraction_payloads(rows, calls_per_run=20, calls_per_payload=8) == [
+            "newest",
+            "newer",
+        ]
+
+    def test_always_processes_at_least_one(self) -> None:
+        from augur.scheduler import cap_extraction_payloads
+
+        assert cap_extraction_payloads(["only"], calls_per_run=3, calls_per_payload=8) == ["only"]

@@ -20,6 +20,12 @@ A thin abstraction over OpenRouter that enforces three invariants:
    cost OpenRouter does not report raises LLMCostUnreportedError: an
    unmetered call is a budget leak, and leaks must be loud.
 
+A call quota caps how many calls start per UTC day and per minute, counted
+from `llm_calls` (failed calls included, as OpenRouter counts them).  It exists
+for OpenRouter's free tier, which limits requests per account rather than
+spend.  Over the daily quota the client raises LLMQuotaExceededError; over the
+per-minute rate it waits.
+
 Each request also carries OpenRouter's `trace` field (trace_id = our call_id),
 so if OpenRouter Broadcast is switched on, its traces join back to llm_calls.
 
@@ -41,7 +47,7 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -50,13 +56,22 @@ from openai import AsyncOpenAI, RateLimitError
 
 from augur.config import Settings, get_settings
 from augur.llm.call_log import CallLog, LLMCallEnd, LLMCallStart, PostgresCallLog
-from augur.llm.models import DEFAULT_MODEL_ROUTING, FREE_TIER_STAGES, PipelineStage
+from augur.llm.models import (
+    DEFAULT_MODEL_ROUTING,
+    FREE_TIER_STAGES,
+    PipelineStage,
+    routing_from_overrides,
+)
 
 log = structlog.get_logger(__name__)
 
 
 class LLMBudgetExceededError(Exception):
     """Raised when the daily LLM spend cap has been reached."""
+
+
+class LLMQuotaExceededError(LLMBudgetExceededError):
+    """Raised when the daily LLM call quota has been reached."""
 
 
 class LLMCallError(Exception):
@@ -82,6 +97,14 @@ def _utc_today() -> date:
     return datetime.now(UTC).date()
 
 
+def _utc_midnight() -> datetime:
+    return datetime.combine(_utc_today(), datetime.min.time(), tzinfo=UTC)
+
+
+# How often a call held back by the per-minute rate re-checks for a free slot
+_RATE_POLL_SECONDS = 5.0
+
+
 def _trace_value(value: Any) -> Any:
     return value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
 
@@ -104,11 +127,18 @@ class LLMClient:
         call_log: CallLog,
         environment: str = "development",
         model_routing: dict[PipelineStage, str] | None = None,
+        daily_call_limit: int | None = None,
+        calls_per_minute: int | None = None,
     ) -> None:
         self._daily_budget = daily_budget_usd
         self._call_log = call_log
         self._environment = environment
         self._model_routing = model_routing or dict(DEFAULT_MODEL_ROUTING)
+        self._daily_call_limit = daily_call_limit
+        self._calls_per_minute = calls_per_minute
+        # Serialises the quota check and the call's record within this process,
+        # so concurrent calls (lenses run in parallel) cannot all pass one check.
+        self._quota_lock = asyncio.Lock()
 
         # Retries are handled in complete(); the SDK's own retries are disabled
         # so one logical call never becomes several silent billed attempts.
@@ -139,6 +169,18 @@ class LLMClient:
             daily_budget_usd=cfg.daily_llm_budget_usd,
             call_log=call_log or PostgresCallLog(),
             environment=cfg.augur_env,
+            model_routing=routing_from_overrides(
+                {
+                    PipelineStage.EXTRACTION: cfg.augur_model_extraction,
+                    PipelineStage.ANCHORING: cfg.augur_model_anchoring,
+                    PipelineStage.DISCONFIRMATION: cfg.augur_model_disconfirmation,
+                    PipelineStage.PROJECTION: cfg.augur_model_projection,
+                    PipelineStage.CONVERSATION: cfg.augur_model_conversation,
+                    PipelineStage.DIGEST: cfg.augur_model_digest,
+                }
+            ),
+            daily_call_limit=cfg.llm_daily_call_limit,
+            calls_per_minute=cfg.llm_calls_per_minute,
         )
 
     def model_for_stage(self, stage: PipelineStage) -> str:
@@ -172,6 +214,7 @@ class LLMClient:
 
         Raises:
             LLMBudgetExceededError: Daily spend cap reached (main key only).
+            LLMQuotaExceededError: Daily call quota reached (all stages).
             LLMCallError: All retries exhausted.
             LLMCostUnreportedError: OpenRouter did not report a budgeted call's cost.
         """
@@ -190,19 +233,21 @@ class LLMClient:
         call_id = uuid.uuid4()
         metadata = metadata or {}
 
-        # Recorded before the call: if this write fails, nothing is billed.
-        await self._call_log.start(
-            LLMCallStart(
-                call_id=call_id,
-                stage=str(stage),
-                prompt_template_id=prompt_template_id,
-                model=model,
-                is_free_tier=is_free_tier,
-                temperature=temperature,
-                metadata=metadata,
-                messages=messages,
+        async with self._quota_lock:
+            await self._wait_for_quota()
+            # Recorded before the call: if this write fails, nothing is billed.
+            await self._call_log.start(
+                LLMCallStart(
+                    call_id=call_id,
+                    stage=str(stage),
+                    prompt_template_id=prompt_template_id,
+                    model=model,
+                    is_free_tier=is_free_tier,
+                    temperature=temperature,
+                    metadata=metadata,
+                    messages=messages,
+                )
             )
-        )
 
         trace = {
             "trace_id": str(call_id),
@@ -259,6 +304,8 @@ class LLMClient:
             ) from last_error
 
         content = response.choices[0].message.content or ""
+        # The free router answers with whichever model it picked
+        served_model = getattr(response, "model", None) or model
         usage = response.usage
         prompt_tokens = usage.prompt_tokens if usage else 0
         completion_tokens = usage.completion_tokens if usage else 0
@@ -277,6 +324,7 @@ class LLMClient:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 cost_usd=cost_usd,
+                model=served_model,
             ),
         )
 
@@ -290,7 +338,7 @@ class LLMClient:
         log.info(
             "llm.complete",
             stage=stage,
-            model=model,
+            model=served_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=str(cost_usd),
@@ -300,12 +348,30 @@ class LLMClient:
 
         return LLMResponse(
             content=content,
-            model=model,
+            model=served_model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=cost_usd or Decimal(0),
             call_id=str(call_id),
         )
+
+    async def _wait_for_quota(self) -> None:
+        """Raise past the daily quota; wait while the per-minute rate is used up."""
+        if self._daily_call_limit is not None:
+            used = await self._call_log.calls_since(_utc_midnight())
+            if used >= self._daily_call_limit:
+                raise LLMQuotaExceededError(
+                    f"Daily LLM call quota of {self._daily_call_limit} reached "
+                    f"({used} calls today). The quota resets at midnight UTC."
+                )
+        if self._calls_per_minute:
+            while True:
+                recent = await self._call_log.calls_since(
+                    datetime.now(UTC) - timedelta(minutes=1)
+                )
+                if recent < self._calls_per_minute:
+                    return
+                await asyncio.sleep(_RATE_POLL_SECONDS)
 
     async def health_check(self) -> dict[str, Any]:
         """
@@ -315,8 +381,10 @@ class LLMClient:
         """
         call_log_ok = False
         today_spend: Decimal | None = None
+        today_calls: int | None = None
         try:
             today_spend = await self._call_log.budgeted_spend_for(_utc_today())
+            today_calls = await self._call_log.calls_since(_utc_midnight())
             call_log_ok = True
         except Exception as exc:
             log.warning("llm.health.call_log_unavailable", error=str(exc))
@@ -327,4 +395,6 @@ class LLMClient:
             "free_tier_key_configured": bool(self._free_client.api_key),
             "daily_budget_usd": str(self._daily_budget),
             "today_spend_usd": str(today_spend) if today_spend is not None else None,
+            "daily_call_limit": self._daily_call_limit,
+            "today_calls": today_calls,
         }

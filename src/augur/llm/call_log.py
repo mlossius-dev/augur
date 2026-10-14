@@ -6,9 +6,10 @@ completed afterwards, so the log is the audit trail ("which call produced
 this edge?") and the analysis surface (cost, latency and failures by stage,
 model and prompt template) in one table next to the graph it explains.
 
-The same table feeds the daily budget: spend is the sum of today's reported
-costs for budgeted (non-free-tier) calls, so the cap holds across the API
-server, the scheduler and the CLI, and survives restarts.
+The same table feeds the daily budget and the call quota: spend is the sum of
+today's reported costs for budgeted (non-free-tier) calls, and the quota counts
+every call started, so both hold across the API server, the scheduler and the
+CLI, and survive restarts.
 
 The in-memory log exists for tests and single-process tools.
 """
@@ -47,6 +48,9 @@ class LLMCallEnd:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     cost_usd: Decimal | None = None
+    # The model that answered, when it differs from the one requested (the
+    # free router picks one per call)
+    model: str | None = None
 
 
 class CallLog(Protocol):
@@ -55,6 +59,8 @@ class CallLog(Protocol):
     async def finish(self, call_id: UUID, end: LLMCallEnd) -> None: ...
 
     async def budgeted_spend_for(self, day: date) -> Decimal: ...
+
+    async def calls_since(self, since: datetime) -> int: ...
 
 
 def _json(value: Any) -> str:
@@ -109,7 +115,8 @@ class PostgresCallLog:
             UPDATE llm_calls
                SET finished_at = now(), status = $2, attempts = $3,
                    latency_ms = $4, output = $5, error = $6,
-                   prompt_tokens = $7, completion_tokens = $8, cost_usd = $9
+                   prompt_tokens = $7, completion_tokens = $8, cost_usd = $9,
+                   model = COALESCE($10, model)
              WHERE call_id = $1
             """,
             call_id,
@@ -121,6 +128,12 @@ class PostgresCallLog:
             end.prompt_tokens,
             end.completion_tokens,
             end.cost_usd,
+            end.model,
+        )
+
+    async def calls_since(self, since: datetime) -> int:
+        return await self._get_pool().fetchval(
+            "SELECT count(*) FROM llm_calls WHERE called_at >= $1", since
         )
 
     async def budgeted_spend_for(self, day: date) -> Decimal:
@@ -148,6 +161,9 @@ class InMemoryCallLog:
     async def finish(self, call_id: UUID, end: LLMCallEnd) -> None:
         start, _, called_at = self.calls[call_id]
         self.calls[call_id] = (start, end, called_at)
+
+    async def calls_since(self, since: datetime) -> int:
+        return sum(1 for _, _, called_at in self.calls.values() if called_at >= since)
 
     async def budgeted_spend_for(self, day: date) -> Decimal:
         total = Decimal(0)
