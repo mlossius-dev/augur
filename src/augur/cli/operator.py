@@ -1755,8 +1755,7 @@ async def _monitor_duplicates_async(min_similarity: float, limit: int) -> None:
     pool, close_db = await _get_pool()
     try:
         pairs = await find_duplicate_candidates(pool, min_similarity=min_similarity, limit=limit)
-        typer.secho(f"
-Duplicate candidates — similarity >= {min_similarity}", bold=True)
+        typer.secho(f"\nDuplicate candidates — similarity >= {min_similarity}", bold=True)
         typer.echo("─" * 60)
         if not pairs:
             typer.echo("  None.")
