@@ -200,6 +200,7 @@ async def reasoning_edge(
             SELECT e.edge_id, e.edge_type, e.current_weight_band,
                    e.reasoning, e.falsification_criteria,
                    e.supporting_signals, e.disconfirming_signals,
+                   e.created_from,
                    e.last_disconfirmation_pass,
                    e.created_at, e.deprecated, e.deprecated_at,
                    e.llm_call_ids,
@@ -249,6 +250,24 @@ async def reasoning_edge(
                 LIMIT 20
                 """,
                 supporting_ids,
+            )
+
+        # Signals of the anchoring batch that created the edge.  Not the same as
+        # supporting signals: a batch can hold signals about other edges too.
+        origin_ids = list(edge_row["created_from"] or [])
+        origin_rows = []
+        if origin_ids:
+            origin_rows = await conn.fetch(
+                """
+                SELECT s.signal_id, s.lens_id, s.claim_text, s.confidence_band,
+                       s.content_timestamp, p.source_id
+                FROM signals s
+                LEFT JOIN payloads p ON p.payload_id = s.payload_id
+                WHERE s.signal_id = ANY($1)
+                ORDER BY s.content_timestamp DESC
+                LIMIT 20
+                """,
+                origin_ids,
             )
 
         # Disconfirming signals
@@ -327,6 +346,7 @@ async def reasoning_edge(
         ],
         "supporting_signals": [_sig(r) for r in supporting_rows],
         "disconfirming_signals": [_sig(r) for r in disconf_rows],
+        "origin_signals": [_sig(r) for r in origin_rows],
         "disconfirmation_events": [
             {
                 "pass_event_id": str(r["pass_event_id"]),

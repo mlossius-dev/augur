@@ -40,6 +40,13 @@ const SCRUB_SPAN_MS  = SCRUB_END_MS - SCRUB_START_MS;
 const SCRUB_START_YR = new Date(SCRUB_START_MS).getFullYear();
 const SCRUB_END_YR   = new Date(SCRUB_END_MS).getFullYear();
 
+// Models answer in markdown; render **bold** as <strong> and leave the rest as
+// text.  React elements, not innerHTML, so model output cannot inject markup.
+function withBold(text) {
+  return String(text || "").split(/\*\*(.+?)\*\*/g)
+    .map((part, i) => (i % 2 ? <strong key={i}>{part}</strong> : part));
+}
+
 // ── Adapters ──────────────────────────────────────────────────────────────────
 
 function stateTitle(s) {
@@ -306,7 +313,8 @@ function DomainCard({ dim, changes, selected, onClick }) {
           <div style={{ fontFamily:mono, fontSize:9, letterSpacing:".12em", color:P.ink4 }}>{dim.short}</div>
         </div>
 
-        <div style={{ display:"flex", alignItems:"baseline", gap:8, marginTop:8 }}>
+        {/* Wraps so a long state ("Deteriorating") does not run into the rate label */}
+        <div style={{ display:"flex", flexWrap:"wrap", alignItems:"baseline", columnGap:8, rowGap:2, marginTop:8 }}>
           <span style={{ fontFamily:display, fontWeight:600, fontSize:23, color:st.ring, lineHeight:1 }}>
             {st.label}
           </span>
@@ -797,7 +805,9 @@ function AlmanacScrubber({ asOf, onChange, events }) {
 
   const asOfMs = asOf ? new Date(asOf).getTime() : SCRUB_END_MS;
   const t = Math.max(0, Math.min(1, (asOfMs - SCRUB_START_MS) / SCRUB_SPAN_MS));
-  const isLive = !asOf || t > 0.998;
+  // Live means no as_of. The track snaps its last 0.2% (about 3.5 days) to
+  // live when dragged, but a stepped-back as_of in that stretch is historical.
+  const isLive = !asOf;
 
   const posToIso = useCallback(pos => {
     if (pos > 0.998) return null;
@@ -946,7 +956,9 @@ function AskAugur({ open, onClose, asOf }) {
           {messages.map((m, i) => (
             <div key={i} className={`ag-conv-msg ag-conv-msg-${m.role}`}>
               <div className="ag-conv-msg-role">{m.role}</div>
-              <div className="ag-conv-msg-text">{m.text}</div>
+              <div className="ag-conv-msg-text">
+                {m.role === "assistant" ? withBold(m.text) : m.text}
+              </div>
               {m.meta && <div className="ag-conv-msg-meta">{m.meta}</div>}
             </div>
           ))}
@@ -1218,7 +1230,7 @@ function ReasoningView({ type, id, onBack, onNodeSelect, onEdgeSelect, asOf }) {
   const sigRow = (s, i) => (
     <div key={s.signal_id||i} style={{ padding:"6px 0", borderBottom:`1px solid ${P.ruleSoft}` }}>
       <div style={{ fontFamily:mono, fontSize:9, color:P.ink4 }}>
-        {s.lens_id ? `${s.lens_id} · ` : ""}{fmtRelTime(s.content_timestamp)}
+        {s.source_id ? `${s.source_id} · ` : ""}{s.lens_id ? `${s.lens_id} · ` : ""}{fmtRelTime(s.content_timestamp)}
       </div>
       <div style={{ fontFamily:serif, fontSize:13, color:P.natt, marginTop:2 }}>
         {s.claim_text}
@@ -1279,6 +1291,16 @@ function ReasoningView({ type, id, onBack, onNodeSelect, onEdgeSelect, asOf }) {
         <div className="reasoning-section">
           <div className="reasoning-label">DISCONFIRMING SIGNALS ({data.disconfirming_signals.length})</div>
           {data.disconfirming_signals.slice(0,5).map(sigRow)}
+        </div>
+      )}
+
+      {data.origin_signals && data.origin_signals.length > 0 && (
+        <div className="reasoning-section">
+          <div className="reasoning-label">CREATED FROM ({data.origin_signals.length} SIGNALS IN THE ANCHORING BATCH)</div>
+          <div style={{ fontFamily:serif, fontSize:12, fontStyle:"italic", color:P.ink3, marginBottom:6 }}>
+            The batch that proposed this edge; not every signal in it bears on this edge.
+          </div>
+          {data.origin_signals.slice(0,10).map(sigRow)}
         </div>
       )}
     </div>
@@ -1501,7 +1523,7 @@ function App() {
                       ` ${dims.filter(d=>d.dir==="↗").length} improving.`}
                     {" "}
                     {changes && changes.length > 0
-                      ? `${changes.length} structural change${changes.length>1?"s":""} in the last 24 hours.`
+                      ? `${changes.length}${homeData.changes_truncated ? "+" : ""} structural change${changes.length>1?"s":""} in the last 24 hours.`
                       : "No structural changes in the last 24 hours."}
                   </div>
                   <div style={{ marginTop:12, fontFamily:mono, fontSize:9.5, color:P.ink4,

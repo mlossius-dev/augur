@@ -93,9 +93,12 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         # Payloads in last 24h
         payload_row = await conn.fetchrow(
             """
+            -- total and last_4h count accepted payloads; rejected ones (mostly the
+            -- same headline re-fetched every hour) are counted separately
             SELECT
-                COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE fetched_at > now() - interval '4 hours') AS last_4h,
+                COUNT(*) FILTER (WHERE NOT rejected) AS total,
+                COUNT(*) FILTER (WHERE NOT rejected
+                                   AND fetched_at > now() - interval '4 hours') AS last_4h,
                 COUNT(*) FILTER (WHERE rejected) AS rejected
             FROM payloads
             WHERE fetched_at > now() - interval '24 hours'
