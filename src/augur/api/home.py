@@ -22,6 +22,8 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["home"])
 
 
+_HOME_CHANGES_LIMIT = 200
+
 def _pool(request: Request):
     return request.app.state.raw_pool
 
@@ -95,7 +97,9 @@ async def home_view(
     ts = _as_of(as_of)
 
     dimensions = await compute_dimension_scores(pool, as_of=ts)
-    changes = await get_recent_changes(pool, hours=24, as_of=ts, limit=12)
+    # The overview, cards and ledgers count these, so fetch the whole window
+    # (60 changes on a busy day so far), not a display-sized handful.
+    changes = await get_recent_changes(pool, hours=24, as_of=ts, limit=_HOME_CHANGES_LIMIT)
 
     # Editorial notes reflect the *current* 24h; only attach them to the live view.
     notes = await get_dimension_notes(pool) if ts is None else {}
@@ -104,6 +108,8 @@ async def home_view(
         "as_of": (ts or datetime.utcnow()).isoformat(),
         "dimensions": [_serialise_dimension(d, notes.get(d.dimension, "")) for d in dimensions],
         "changes": [_serialise_change(c) for c in changes],
+        # True when the window held more changes than were returned
+        "changes_truncated": len(changes) >= _HOME_CHANGES_LIMIT,
     })
 
 
