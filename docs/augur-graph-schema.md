@@ -309,6 +309,34 @@ The hardest practical schema problem. The schema commits to:
 
 For the seed graph, the alias table starts with the major countries, currencies, central banks, and commodities — perhaps 200-300 entries hand-curated. Growth is incremental and operator-reviewed.
 
+## Merging duplicate nodes
+
+Alias resolution prevents most duplicates but not all. Live operation and the 2026 backfill produce pairs that are the same thing under two nodes: the same headline anchored twice, "USD/CAD exchange rate" as both an `Entity` and a `Condition`, "Natural Gas" next to "Natural Gas Supply". In October 2026, 174 pairs shared a name exactly: 133 of the same type, 41 of different types, most of those a `Condition` and an `Event` for one development. Name similarity cannot decide which pairs are true duplicates ("Iran" and "Iran War" are similar and distinct), so `augur monitor duplicates` lists candidates weekly and an operator decides. A merge is how that decision reaches the graph.
+
+**Identity correction, not a world event.** A merge says "these were always one thing", so it applies retroactively: after it, every `as_of` view shows the survivor wherever either node appeared. Its event carries the processing time; it does not move any `content_timestamp`.
+
+**Operator-only, through the Applier.** A merge is the operation `merge_nodes` (survivor, absorbed, reasoning), applied by the Applier like any other mutation and recorded in `graph_update_events`. It is not part of the `proposed_anchors` schema: anchoring and other LLM stages cannot propose one. The operator issues it from the CLI, one pair at a time or as a reviewed batch of exact same-name, same-type pairs.
+
+**What the Applier does, in one transaction:**
+
+1. **Validates.** Both nodes exist and neither is already merged; they differ; the types are compatible (below).
+2. **Moves the edges.** Every edge touching the absorbed node is re-pointed to the survivor. An edge that becomes a self-loop is deprecated. Where two edges now share source, target and type, the one with the stronger weight band is kept, the other is deprecated, and the kept edge gains the deprecated one's supporting and disconfirming signals and `created_from`. Weight bands are not recomputed: a merge adds no evidence, so it does not strengthen anything.
+3. **Moves the history.** `activation_history` and `assessment_history` entries are re-pointed to the survivor; its current state is then the latest entry by `content_timestamp` across both, per "Time order versus processing order".
+4. **Moves the references.** Topic memberships, scenario condition lists, and the absorbed node's name and aliases (now aliases of the survivor, so anchoring resolves to it from then on).
+5. **Merges provenance.** `created_from` and `llm_call_ids` are unioned; `created_at` is the earlier, `updated_at` the later.
+6. **Keeps the absorbed node as a tombstone.** It is not deleted (see "What the schema deliberately does not include"): it gains `merged_into` (the survivor) and `merged_at`, read paths exclude it, and a lookup by its ID resolves to the survivor. The event's `operation_data` holds a snapshot of the absorbed node and of everything that moved, so a mistaken merge can be reversed by hand.
+
+Nothing is deleted, so IDs held elsewhere stay valid: Discourse's frame labels name Core edges, which are at most deprecated, and the `core_bridge` views keep their shape.
+
+**Type compatibility.**
+
+- Same type: always allowed.
+- Different types: allowed only when the absorbed node carries no type-specific history (no `activation_history`, no `assessment_history`), and only with an explicit flag. The survivor keeps its type; the absorbed node's type-specific fields survive only in the snapshot. In practice this lets an `Event` (which has no activation history) be absorbed into the `Condition` it duplicates, the commonest cross-type case.
+
+**Decision (proposed):** operator-only merges, retroactive, tombstone instead of deletion, cross-type allowed under the two conditions above.
+**Alternatives considered:** letting anchoring propose merges (rejected for now: a wrong merge rewrites history, and LLM duplicate judgement is exactly what failed to prevent these pairs); deleting the absorbed node (rejected: the schema retains nodes for traceability, and Discourse holds Core IDs); merging only same-type pairs (simpler, and covers about three quarters of the pairs seen; the rest would stay).
+**Revisit trigger:** if the weekly candidate list stays long after a few rounds of operator merges, consider letting anchoring propose `merge_nodes` for exact same-name, same-type pairs, still applied only after operator review; if mistaken merges happen more than rarely, add an automatic unmerge from the snapshot.
+
 ---
 
 ## Time and provenance
@@ -515,7 +543,7 @@ To keep the system buildable and the graph reasonable:
 - **No free-text predicates.** Edge types are the nine listed above. "Influences," "affects," "impacts," etc. are not edge types — they are vague placeholders that the schema rejects.
 - **No multi-graph or sub-graph isolation.** One graph. Different subject areas live as connected subgraphs, not as separate graphs.
 - **No private/secret nodes.** All graph content is visible to all readers of the graph. Privacy is enforced at the deployment level, not inside the schema.
-- **No automatic node deletion.** Nodes can be marked deprecated (e.g., a defunct organization) but the schema retains them for historical traceability.
+- **No automatic node deletion.** Nodes can be marked deprecated (e.g., a defunct organization) but the schema retains them for historical traceability. A merge (see "Merging duplicate nodes") likewise keeps the absorbed node, as a tombstone pointing to the survivor.
 
 ---
 
