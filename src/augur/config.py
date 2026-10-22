@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # Total spend cap for the backfill's paid calls (docs/augur-architecture.md,
     # "Historical backfill"), on top of the daily budget.
     backfill_budget_usd: float = 4.0
+    # Paid low-cost model for the backfill's extraction and anchoring
+    backfill_model: str = "inclusionai/ling-3.0-flash"
+    # Its reasoning switched off: the cost estimate assumes direct answers
+    backfill_reasoning_off: bool = True
+    backfill_per_day: int = 25
+    backfill_per_source_cap: int = 8
 
     # ── Model routing overrides ───────────────────────────────────────────────
     # Empty = the default in augur.llm.models (openrouter/free for every stage).

@@ -99,42 +99,7 @@ class IngestionPipeline:
             log.info("ingestion.source_empty", source_id=source.source_id)
             return 0
 
-        # Load known hashes for this source to detect exact duplicates
-        known_hashes = await self._load_known_hashes(source.source_id)
-
-        stored = 0
-        for fr in fetch_results:
-            # Spam filter
-            fr = spam_check(fr, known_hashes=known_hashes)
-
-            # Normalize to DB shape
-            payload = normalize(fr)
-
-            # Store in DB (both clean and rejected payloads are stored)
-            stored_ok = await self._store_payload(payload)
-            if stored_ok and not fr.rejected:
-                # Add to known hashes so later results in same batch deduplicate
-                known_hashes.add(content_hash(fr.raw_content))
-                stored += 1
-
-                # Archive to filesystem
-                try:
-                    local_path = self._archiver.archive(
-                        payload,
-                        payload_id=payload["payload_id"],
-                        content_timestamp=payload["content_timestamp"],
-                        source_id=source.source_id,
-                    )
-                    # S3 upload is best-effort; failures are logged, not fatal
-                    if self._archiver._s3 is not None:
-                        self._archiver.upload_to_s3(
-                            local_path,
-                            source_id=source.source_id,
-                            content_timestamp=payload["content_timestamp"],
-                            payload_id=payload["payload_id"],
-                        )
-                except Exception as exc:
-                    log.warning("ingestion.archive_failed", error=str(exc))
+        stored = len(await self.store_fetch_results(source.source_id, fetch_results))
 
         log.info(
             "ingestion.source_done",
@@ -142,6 +107,50 @@ class IngestionPipeline:
             fetched=len(fetch_results),
             stored=stored,
         )
+        return stored
+
+    async def store_fetch_results(
+        self, source_id: str, fetch_results: list[FetchResult]
+    ) -> list[dict[str, Any]]:
+        """
+        De-spam, normalize, store and archive fetched items for one source.
+
+        Both clean and rejected payloads are stored (rejected ones flagged).
+        Returns the clean payloads that were stored, so a caller such as the
+        historical backfill can extract them.  Shared by live ingestion.
+        """
+        # Load known hashes for this source to detect exact duplicates
+        known_hashes = await self._load_known_hashes(source_id)
+
+        stored: list[dict[str, Any]] = []
+        for fr in fetch_results:
+            fr = spam_check(fr, known_hashes=known_hashes)
+            payload = normalize(fr)
+
+            stored_ok = await self._store_payload(payload)
+            if stored_ok and not fr.rejected:
+                # Add to known hashes so later results in same batch deduplicate
+                known_hashes.add(content_hash(fr.raw_content))
+                stored.append(payload)
+
+                # Archive to filesystem
+                try:
+                    local_path = self._archiver.archive(
+                        payload,
+                        payload_id=payload["payload_id"],
+                        content_timestamp=payload["content_timestamp"],
+                        source_id=source_id,
+                    )
+                    # S3 upload is best-effort; failures are logged, not fatal
+                    if self._archiver._s3 is not None:
+                        self._archiver.upload_to_s3(
+                            local_path,
+                            source_id=source_id,
+                            content_timestamp=payload["content_timestamp"],
+                            payload_id=payload["payload_id"],
+                        )
+                except Exception as exc:
+                    log.warning("ingestion.archive_failed", error=str(exc))
         return stored
 
     # ── Private helpers ───────────────────────────────────────────────────────

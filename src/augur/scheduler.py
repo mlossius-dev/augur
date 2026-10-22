@@ -87,6 +87,8 @@ async def _extraction_job(app_state: Any) -> None:
             FROM payloads p
             WHERE p.fetched_at > now() - interval '2 hours'
               AND NOT p.rejected
+              -- Backfilled payloads are extracted by the backfill, on its own model
+              AND NOT (p.metadata ? 'backfill')
               AND NOT EXISTS (
                 SELECT 1 FROM signals s WHERE s.payload_id = p.payload_id
               )
@@ -229,7 +231,8 @@ async def _anchoring_job(app_state: Any) -> None:
     orchestrator = AnchoringOrchestrator(pool, llm_client)
     log_id = await log_job_start(pool, "anchoring")
     try:
-        result = await orchestrator.run_cycle(min_age_hours=1, limit=200)
+        # Backfilled signals are anchored by the backfill, on its own model
+        result = await orchestrator.run_cycle(min_age_hours=1, limit=200, origin="live")
         await log_job_complete(
             pool, log_id,
             n_processed=result.n_signals_processed,

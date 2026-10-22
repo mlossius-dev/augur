@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from time import mktime
+from calendar import timegm
 from typing import Any
 
 import feedparser
@@ -69,42 +69,10 @@ class RssFetcher:
                     )
                     continue
 
-                parsed = feedparser.parse(response.text)
-                entries = parsed.get("entries", [])[:50]
-
-                for entry in entries:
-                    url = entry.get("link", "")
-                    title = entry.get("title", "")
-                    summary = entry.get("summary", "") or entry.get("content", [{}])[0].get("value", "")
-                    content = f"{title}\n\n{summary}".strip()
-
-                    if not content:
-                        continue
-
-                    pub_dt = _parse_pub_date(entry)
-
-                    metadata: dict[str, Any] = {
-                        "url": url,
-                        "headline": title,
-                        "feed_label": label,
-                        "feed_url": feed_url,
-                        "source_native_id": entry.get("id", url),
-                        "content_hash": hashlib.sha256(content.encode()).hexdigest()[:16],
-                    }
-
-                    results.append(
-                        FetchResult(
-                            source_id=source.source_id,
-                            url=url or feed_url,
-                            perspective=source.perspective,
-                            raw_content=content,
-                            fetched_at=fetched_at,
-                            content_timestamp=pub_dt or fetched_at,
-                            content_type="article",
-                            language=source.languages[0] if source.languages else "en",
-                            metadata=metadata,
-                        )
-                    )
+                results.extend(parse_feed_entries(
+                    response.text, source=source, feed_url=feed_url,
+                    label=label, fetched_at=fetched_at,
+                ))
 
         log.info(
             "rss.fetched",
@@ -115,13 +83,63 @@ class RssFetcher:
         return results
 
 
+def parse_feed_entries(
+    text: str,
+    *,
+    source: SourceConfig,
+    feed_url: str,
+    label: str,
+    fetched_at: datetime,
+    limit: int = 50,
+) -> list[FetchResult]:
+    """
+    One FetchResult per entry of an RSS/Atom document, headline and lead.
+
+    Shared by live ingestion and the historical backfill, which reads the same
+    feeds from archived snapshots (docs/augur-sources.md, "Archive access").
+    """
+    results: list[FetchResult] = []
+    for entry in feedparser.parse(text).get("entries", [])[:limit]:
+        url = entry.get("link", "")
+        title = entry.get("title", "")
+        summary = entry.get("summary", "") or entry.get("content", [{}])[0].get("value", "")
+        content = f"{title}\n\n{summary}".strip()
+        if not content:
+            continue
+
+        pub_dt = _parse_pub_date(entry)
+        metadata: dict[str, Any] = {
+            "url": url,
+            "headline": title,
+            "feed_label": label,
+            "feed_url": feed_url,
+            "source_native_id": entry.get("id", url),
+            "content_hash": hashlib.sha256(content.encode()).hexdigest()[:16],
+        }
+        results.append(
+            FetchResult(
+                source_id=source.source_id,
+                url=url or feed_url,
+                perspective=source.perspective,
+                raw_content=content,
+                fetched_at=fetched_at,
+                content_timestamp=pub_dt or fetched_at,
+                content_type="article",
+                language=source.languages[0] if source.languages else "en",
+                metadata=metadata,
+            )
+        )
+    return results
+
+
 def _parse_pub_date(entry: dict[str, Any]) -> datetime | None:
     """Extract publication datetime from a feedparser entry."""
     # feedparser normalizes dates to a 9-tuple or None
     published_parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if published_parsed is not None:
         try:
-            ts = mktime(published_parsed)
+            # feedparser's struct is UTC; mktime would read it as local time
+            ts = timegm(published_parsed)
             return datetime.fromtimestamp(ts, tz=timezone.utc)
         except Exception:
             pass

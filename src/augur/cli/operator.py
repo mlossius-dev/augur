@@ -1865,6 +1865,83 @@ topics_app = typer.Typer(
 app.add_typer(topics_app, name="topics")
 
 
+# ── augur backfill ─────────────────────────────────────────────────────────────
+
+backfill_app = typer.Typer(
+    help="Historical backfill of 2026 from archived feeds, newest day first "
+         "(docs/augur-architecture.md, 'Historical backfill').",
+    no_args_is_help=True,
+)
+app.add_typer(backfill_app, name="backfill")
+
+
+@backfill_app.command("run")
+def backfill_run(
+    days: Annotated[int, typer.Option("--days", help="Days to process this run")] = 1,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Read and draw the next day only: no writes, no LLM")
+    ] = False,
+) -> None:
+    """Process the next DAYS days backwards, within BACKFILL_BUDGET_USD."""
+    _run(_backfill_run_async(days, dry_run))
+
+
+async def _backfill_run_async(days: int, dry_run: bool) -> None:
+    from augur.backfill.runner import BackfillRunner
+    from augur.db.connection import close_db, get_raw_pool, init_db
+
+    settings = get_settings()
+    configure_logging(settings.log_level, "text")
+    await init_db(settings)
+    try:
+        runner = BackfillRunner(get_raw_pool(), settings)
+        typer.echo(f"Backfill model: {settings.backfill_model} | "
+                   f"spent ${await runner.spent():.4f} of ${settings.backfill_budget_usd:.2f}")
+        if dry_run:
+            day = await runner.next_day()
+            if day is None:
+                typer.echo("Nothing left to backfill.")
+                return
+            drawn, found = await runner.draw(day)
+            typer.secho(f"\n{day}: {sum(found.values())} items published, {len(drawn)} drawn", bold=True)
+            for source_id, n in sorted(found.items()):
+                typer.echo(f"  {source_id:<24} {n:>4} found, "
+                           f"{sum(1 for d in drawn if d.source_id == source_id):>3} drawn")
+            for d in drawn[:10]:
+                typer.echo(f"    {d.content_timestamp:%H:%M} {d.source_id:<16} {d.raw_content.splitlines()[0][:90]}")
+            return
+        for r in await runner.run(max_days=days):
+            typer.echo(f"{r.day} {r.status:<7} found={r.n_found:<4} payloads={r.n_payloads:<3} "
+                       f"signals={r.n_signals:<4} applied={r.n_applied:<4} cost=${r.cost_usd:.4f}"
+                       + (f"  ({r.stop_reason})" if r.stop_reason else ""))
+        typer.echo(f"Spent ${await runner.spent():.4f} of ${settings.backfill_budget_usd:.2f}")
+    finally:
+        await close_db()
+
+
+@backfill_app.command("status")
+def backfill_status() -> None:
+    """Days done, what each produced, and the spend so far."""
+    _run(_backfill_status_async())
+
+
+async def _backfill_status_async() -> None:
+    from augur.backfill.runner import BackfillRunner
+
+    pool, close_db = await _get_pool()
+    try:
+        rows = await pool.fetch("SELECT * FROM backfill_days ORDER BY day DESC")
+        runner = BackfillRunner(pool, get_settings())
+        typer.secho(f"\nBackfill: {len(rows)} day(s), spent ${await runner.spent():.4f} "
+                    f"of ${get_settings().backfill_budget_usd:.2f}; next day: {await runner.next_day()}",
+                    bold=True)
+        for r in rows:
+            typer.echo(f"  {r['day']} {r['status']:<7} found={r['n_found']:<4} payloads={r['n_payloads']:<3} "
+                       f"signals={r['n_signals']:<4} applied={r['n_applied']:<4} cost=${r['cost_usd']:.4f}")
+    finally:
+        await close_db()
+
+
 @topics_app.command("create")
 def topics_create(
     name: Annotated[str, typer.Argument(help="Topic name (unique)")],

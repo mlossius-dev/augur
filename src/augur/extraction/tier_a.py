@@ -67,6 +67,7 @@ class TierAStore:
         lens_id: str | None = None,
         min_age_hours: int = 1,
         limit: int = 100,
+        origin: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Return unanchored signals older than `min_age_hours`.
@@ -80,6 +81,9 @@ class TierAStore:
         if lens_id is not None:
             conditions.append(f"lens_id = ${len(params) + 1}")
             params.append(lens_id)
+        if origin is not None:  # 'live' | 'backfill'
+            conditions.append(f"origin = ${len(params) + 1}")
+            params.append(origin)
 
         where = " AND ".join(conditions)
         sql = (
