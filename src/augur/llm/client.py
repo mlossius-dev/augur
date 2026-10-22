@@ -62,6 +62,7 @@ from augur.llm.models import (
     FREE_TIER_STAGES,
     ModelChain,
     PipelineStage,
+    is_free_model,
     routing_from_overrides,
 )
 
@@ -262,7 +263,10 @@ class LLMClient:
         metadata = metadata or {}
 
         async with self._quota_lock:
-            await self._wait_for_quota()
+            # The call quota is the free tier's; a chain of paid models is
+            # bounded by the dollar budget instead.
+            if any(is_free_model(m) for m in chain):
+                await self._wait_for_quota()
             # Recorded before the call: if this write fails, nothing is billed.
             await self._call_log.start(
                 LLMCallStart(

@@ -40,8 +40,10 @@ class LensExecutor:
     Requires an LLMClient instance for completions.
     """
 
-    def __init__(self, llm_client) -> None:  # type: ignore[type-arg]
+    def __init__(self, llm_client, *, origin: str = "live") -> None:  # type: ignore[type-arg]
         self._llm = llm_client
+        # 'live' or 'backfill'; stored on every signal with the model that answered
+        self._origin = origin
 
     async def extract(
         self,
@@ -116,6 +118,8 @@ class LensExecutor:
                     "reasoning": validated.get("reasoning"),
                     "content_timestamp": content_timestamp,
                     "extracted_at": extracted_at,
+                    "extracted_by": response.model,
+                    "origin": self._origin,
                 }
             )
 
@@ -210,6 +214,8 @@ class LensExecutor:
                     "reasoning": validated.get("reasoning"),
                     "content_timestamp": content_timestamp,
                     "extracted_at": extracted_at,
+                    "extracted_by": response.model,
+                    "origin": self._origin,
                 }
             )
 

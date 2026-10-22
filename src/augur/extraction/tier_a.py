@@ -186,8 +186,8 @@ class TierAStore:
                     (signal_id, payload_id, lens_id, lens_version,
                      claim_text, confidence_band,
                      proposed_anchors, reasoning,
-                     content_timestamp, extracted_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     content_timestamp, extracted_at, extracted_by, origin)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 signal["signal_id"],
                 signal["payload_id"],
@@ -199,6 +199,8 @@ class TierAStore:
                 signal.get("reasoning"),
                 signal["content_timestamp"],
                 signal["extracted_at"],
+                signal.get("extracted_by"),
+                signal.get("origin", "live"),
             )
             return True
         except asyncpg.UniqueViolationError:

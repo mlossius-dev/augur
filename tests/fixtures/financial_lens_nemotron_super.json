@@ -1,0 +1,19 @@
+[
+  {
+    "claim_text": "USD/JPY exchange rate increased 0.32% over the past five trading days, rising from 158.296 to 158.806.",
+    "confidence_band": "reported_claim",
+    "reasoning": "The payload provides a specific numeric change in the USD/JPY FX rate over a defined period, sourced from Yahoo Finance.",
+    "proposed_anchors": [
+      {
+        "operation": "create_node",
+        "node_type": "entity",
+        "proposed_id": "usd_jpy_pair",
+        "fields": {
+          "name": "USD/JPY",
+          "entity_kind": "instrument"
+        },
+        "reasoning": "To represent the currency pair referenced in the signal."
+      }
+    ]
+  }
+]
