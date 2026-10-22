@@ -70,6 +70,8 @@ async def pool():
 
 async def _cleanup(pool, created: list[uuid.UUID]) -> None:
     # Remove what the test created (edges first, then nodes)
+    # Rejections have no target; every test applies with source='test'
+    await pool.execute("DELETE FROM graph_update_events WHERE source = 'test'")
     await pool.execute(
         "DELETE FROM graph_update_events WHERE target_node_id = ANY($1) "
         "OR target_edge_id IN (SELECT edge_id FROM edges "
@@ -276,3 +278,23 @@ async def test_older_supporting_signal_reaches_edge_back(pool) -> None:
 
     row = await pool.fetchrow("SELECT created_at, updated_at FROM edges WHERE edge_id = $1", edge)
     assert (row["created_at"], row["updated_at"]) == (MAR, OCT)
+
+
+# ── Event log ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_operation_is_in_the_event_log(pool) -> None:
+    a = await _create(pool, _condition(), MAR)
+    op = CreateEdgeOperation(
+        source_node_id=str(a), target_node_id=str(uuid.uuid4()), edge_type="causes",
+        proposed_weight_band="provisional", reasoning="test", falsification_criteria="test")
+    result = await Applier(pool.pool).apply([op], content_timestamp=MAR, source="test")
+
+    assert len(result.rejected) == 1
+    row = await pool.fetchrow(
+        "SELECT rejected, rejection_reason, content_timestamp FROM graph_update_events "
+        "WHERE event_id = $1", result.rejected[0].event_id)
+    assert row["rejected"] is True
+    assert "could not be resolved" in row["rejection_reason"]
+    assert row["content_timestamp"] == MAR

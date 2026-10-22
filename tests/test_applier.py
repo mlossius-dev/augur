@@ -1094,3 +1094,40 @@ class TestExtractTypeDataStatic:
         }
         result = Applier._extract_type_data("condition", fields)
         assert result == {"current_state": "active", "subject_entities": ["abc"]}
+
+
+class TestEventLog:
+    """Every operation the Applier is given ends up in graph_update_events."""
+
+    @staticmethod
+    def _event_inserts(conn) -> list:
+        return [c for c in conn.execute.call_args_list
+                if "INSERT INTO graph_update_events" in str(c)]
+
+    @pytest.mark.asyncio
+    async def test_a_rejection_is_recorded(self):
+        conn = _make_conn(node_exists=False)
+        applier = _make_applier(conn)
+        bad = CreateNodeOperation(
+            node_type="entity", proposed_id="x", fields={"name": "X"},  # no entity_kind
+            reasoning="test",
+        )
+        result = await applier.apply([bad], content_timestamp=_TS)
+
+        assert len(result.rejected) == 1
+        [insert] = self._event_inserts(conn)
+        # rejected flag and reason are the last two parameters
+        assert insert.args[-2:] == (True, result.rejected[0].rejection_reason)
+
+    @pytest.mark.asyncio
+    async def test_an_alias_match_is_recorded(self):
+        alias = MagicMock()
+        alias.__getitem__ = lambda self, k: {
+            "canonical_node_id": str(_NODE_UUID), "canonical_name": "Russia",
+            "alias_text": "Russia"}[k]
+        conn = _make_conn(alias_row=alias)
+        applier = _make_applier(conn)
+        result = await applier.apply([_create_entity(name="Russia")], content_timestamp=_TS)
+
+        assert result.applied[0].event_type == "create_node_aliased"
+        assert len(self._event_inserts(conn)) == 1
