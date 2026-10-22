@@ -76,6 +76,29 @@ def _make_pool(conn: AsyncMock) -> MagicMock:
     return pool
 
 
+def _fetchval_by_query(
+    *, exists: bool = False, updated_at=None, latest=None, in_force=None
+) -> AsyncMock:
+    """
+    A fetchval that answers by query, so the Applier's time-order lookups get
+    values of the right type: existence checks -> `exists`; a node's
+    updated_at; a history table's latest content_timestamp; the history value
+    in force at the operation's time.
+    """
+    async def answer(query: str, *args: Any) -> Any:
+        if "EXISTS" in query:
+            return exists
+        if "SELECT updated_at" in query:
+            return updated_at
+        if "max(content_timestamp)" in query:
+            return latest
+        if "ORDER BY content_timestamp DESC" in query:
+            return in_force
+        return exists
+
+    return AsyncMock(side_effect=answer)
+
+
 def _make_conn(
     *,
     node_exists: bool = False,
@@ -104,8 +127,8 @@ def _make_conn(
     # fetchrow: alias resolver uses it; edge queries use it
     conn.fetchrow = AsyncMock(return_value=alias_row)
 
-    # fetchval: node / edge existence checks
-    conn.fetchval = AsyncMock(return_value=node_exists)
+    # fetchval: node / edge existence checks, and time-order lookups
+    conn.fetchval = _fetchval_by_query(exists=node_exists)
 
     # fetch: fuzzy candidates — not called on hot path
     conn.fetch = AsyncMock(return_value=[])
@@ -642,7 +665,7 @@ class TestUpdateNode:
     @pytest.mark.asyncio
     async def test_condition_state_change_writes_history(self):
         conn = _make_conn(node_exists=True)
-        conn.fetchval = AsyncMock(side_effect=[True, "active"])  # exists, prev state
+        conn.fetchval = _fetchval_by_query(exists=True, in_force="active")
         applier = _make_applier(conn)
         op = UpdateNodeOperation(
             target_node_id=str(uuid.uuid4()),
@@ -651,14 +674,15 @@ class TestUpdateNode:
         )
         result = await applier.apply([op], content_timestamp=_TS)
         assert len(result.applied) == 1
-        # Verify that an INSERT to condition_state_history was attempted
-        calls = [str(c) for c in conn.execute.call_args_list]
-        assert any("condition_state_history" in c for c in calls)
+        # History records the change from the state in force, not the new one
+        [history] = [c for c in conn.execute.call_args_list
+                     if "condition_state_history" in str(c)]
+        assert history.args[2:4] == ("inactive", "active")
 
     @pytest.mark.asyncio
     async def test_claim_assessment_change_writes_history(self):
         conn = _make_conn(node_exists=True)
-        conn.fetchval = AsyncMock(side_effect=[True, "weakly_supported"])
+        conn.fetchval = _fetchval_by_query(exists=True, in_force="weakly_supported")
         applier = _make_applier(conn)
         op = UpdateNodeOperation(
             target_node_id=str(uuid.uuid4()),
@@ -730,7 +754,7 @@ class TestUpdateEdgeWeight:
     @pytest.mark.asyncio
     async def test_valid_weight_update_applied(self):
         conn = _make_conn(node_exists=True)
-        conn.fetchval = AsyncMock(return_value=True)
+        conn.fetchval = _fetchval_by_query(exists=True)
         conn.fetchrow = AsyncMock(return_value=self._edge_row())
         conn.execute = AsyncMock(return_value="UPDATE 1")
         applier = _make_applier(conn)
@@ -747,7 +771,7 @@ class TestUpdateEdgeWeight:
     @pytest.mark.asyncio
     async def test_disconfirmation_source_sets_change_type(self):
         conn = _make_conn(node_exists=True)
-        conn.fetchval = AsyncMock(return_value=True)
+        conn.fetchval = _fetchval_by_query(exists=True)
         conn.fetchrow = AsyncMock(return_value=self._edge_row())
         conn.execute = AsyncMock(return_value="UPDATE 1")
         applier = _make_applier(conn)

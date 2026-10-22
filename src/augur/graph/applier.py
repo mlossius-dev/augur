@@ -272,6 +272,53 @@ class Applier:
         except ValueError:
             return None
 
+    # ── Time order (docs/augur-graph-schema.md, "Time order versus processing
+    # order"): "current" is the latest by content_timestamp, never the latest
+    # processed.  An operation older than what its target already reflects is
+    # recorded in history only, and existence reaches back to the earliest
+    # evidence.
+
+    @staticmethod
+    async def _history_position(
+        conn: asyncpg.Connection,
+        *,
+        table: str,
+        key_col: str,
+        value_col: str,
+        key: UUID,
+        content_timestamp: datetime,
+    ) -> tuple[bool, Any]:
+        """
+        (stale, value_in_force) for an append to a history table.
+
+        stale: an entry later than `content_timestamp` already exists, so the
+        new entry must not change the current value.  value_in_force: the
+        latest value at or before `content_timestamp` (None if none).
+        """
+        latest = await conn.fetchval(
+            f"SELECT max(content_timestamp) FROM {table} WHERE {key_col} = $1", key
+        )
+        in_force = await conn.fetchval(
+            f"SELECT {value_col} FROM {table} "
+            f"WHERE {key_col} = $1 AND content_timestamp <= $2 "
+            "ORDER BY content_timestamp DESC LIMIT 1",
+            key,
+            content_timestamp,
+        )
+        return (latest is not None and content_timestamp < latest), in_force
+
+    @staticmethod
+    async def _touch_nodes(
+        conn: asyncpg.Connection, node_ids: list[UUID], content_timestamp: datetime
+    ) -> None:
+        """Evidence at content_timestamp: reach created_at back, never move updated_at back."""
+        await conn.execute(
+            "UPDATE nodes SET created_at = LEAST(created_at, $2), "
+            "updated_at = GREATEST(updated_at, $2) WHERE node_id = ANY($1)",
+            node_ids,
+            content_timestamp,
+        )
+
     # ── create_node ───────────────────────────────────────────────────────────
 
     async def _apply_create_node(
@@ -311,6 +358,7 @@ class Applier:
                     node_id=str(resolved.canonical_node_id),
                 )
                 id_map[op.proposed_id] = resolved.canonical_node_id
+                await self._touch_nodes(conn, [resolved.canonical_node_id], content_timestamp)
                 # Record as an applied event pointing to the existing node
                 return GraphUpdateEvent(
                     event_type="create_node_aliased",
@@ -450,11 +498,40 @@ class Applier:
                 source=source,
             )
 
+        # A field changes its current value only if this operation is not older
+        # than what the node already reflects: history fields decide by their
+        # own history, the rest by updated_at.
+        node_updated_at = await conn.fetchval(
+            "SELECT updated_at FROM nodes WHERE node_id = $1", node_id
+        )
+        node_stale = node_updated_at is not None and content_timestamp < node_updated_at
+
+        state_stale, state_in_force = False, None
+        if "current_state" in updates:
+            state_stale, state_in_force = await self._history_position(
+                conn, table="condition_state_history", key_col="node_id",
+                value_col="new_state", key=node_id, content_timestamp=content_timestamp,
+            )
+        assessment_stale, assessment_in_force = False, None
+        if "current_assessment" in updates:
+            assessment_stale, assessment_in_force = await self._history_position(
+                conn, table="claim_assessment_history", key_col="node_id",
+                value_col="new_assessment", key=node_id, content_timestamp=content_timestamp,
+            )
+
         # Collect changes to the main columns vs type_data
         top_level_updates: dict[str, Any] = {}
         type_data_updates: dict[str, Any] = {}
 
         for k, v in updates.items():
+            if k == "current_state":
+                stale = state_stale
+            elif k == "current_assessment":
+                stale = assessment_stale
+            else:
+                stale = node_stale
+            if stale:
+                continue  # history fields still enter history below
             if k in ("name", "description"):
                 top_level_updates[k] = v
             else:
@@ -465,28 +542,23 @@ class Applier:
                 f"{col} = ${i + 2}" for i, col in enumerate(top_level_updates)
             )
             await conn.execute(
-                f"UPDATE nodes SET {set_clauses}, updated_at = ${len(top_level_updates) + 2} "
-                f"WHERE node_id = $1",
+                f"UPDATE nodes SET {set_clauses} WHERE node_id = $1",
                 node_id,
                 *top_level_updates.values(),
-                content_timestamp,
             )
 
         if type_data_updates:
             await conn.execute(
-                "UPDATE nodes SET type_data = type_data || $2, updated_at = $3 WHERE node_id = $1",
+                "UPDATE nodes SET type_data = type_data || $2 WHERE node_id = $1",
                 node_id,
                 json.dumps(type_data_updates),
-                content_timestamp,
             )
 
-        # If condition state changed, write a history record
+        await self._touch_nodes(conn, [node_id], content_timestamp)
+
+        # State changes always enter history at their own time; the previous
+        # value is the one in force at that time, read before anything changed.
         if "current_state" in updates:
-            # Fetch previous state
-            prev = await conn.fetchval(
-                "SELECT type_data->>'current_state' FROM nodes WHERE node_id = $1",
-                node_id,
-            )
             await conn.execute(
                 """
                 INSERT INTO condition_state_history
@@ -496,19 +568,14 @@ class Applier:
                 """,
                 node_id,
                 updates["current_state"],
-                prev,
+                state_in_force,
                 updates.get("current_state_confidence"),
                 op.reasoning,
                 triggered_by,
                 content_timestamp,
             )
 
-        # If claim assessment changed, write a history record
         if "current_assessment" in updates:
-            prev = await conn.fetchval(
-                "SELECT type_data->>'current_assessment' FROM nodes WHERE node_id = $1",
-                node_id,
-            )
             await conn.execute(
                 """
                 INSERT INTO claim_assessment_history
@@ -518,7 +585,7 @@ class Applier:
                 """,
                 node_id,
                 updates["current_assessment"],
-                prev,
+                assessment_in_force,
                 op.reasoning,
                 triggered_by,
                 content_timestamp,
@@ -573,6 +640,9 @@ class Applier:
         # No self-loops
         if src_id == tgt_id:
             return self._reject(op, REJECT_SELF_LOOP, content_timestamp, source, triggered_by)
+
+        # An edge at this time is evidence both endpoints existed then
+        await self._touch_nodes(conn, [src_id, tgt_id], content_timestamp)
 
         edge_id = uuid.uuid4()
 
@@ -652,20 +722,28 @@ class Applier:
         if row["deprecated"]:
             return self._reject(op, REJECT_DEPRECATED_EDGE, content_timestamp, source, triggered_by)
 
-        previous_band = row["current_weight_band"]
         change_type = "strengthened" if op.direction == "strengthen" else "weakened"
         if source == "disconfirmation":
             change_type = "disconfirmation"
 
-        # Update the edge
+        # The band changes only if no later history entry exists; either way
+        # the entry goes into history at its own time, against the band in
+        # force then.
+        stale, band_in_force = await self._history_position(
+            conn, table="edge_weight_history", key_col="edge_id",
+            value_col="weight_band", key=edge_id, content_timestamp=content_timestamp,
+        )
+        previous_band = band_in_force  # None if nothing was in force yet
+        if not stale:
+            await conn.execute(
+                "UPDATE edges SET current_weight_band = $2 WHERE edge_id = $1",
+                edge_id,
+                str(op.new_weight_band),
+            )
         await conn.execute(
-            """
-            UPDATE edges
-            SET current_weight_band = $2, updated_at = $3
-            WHERE edge_id = $1
-            """,
+            "UPDATE edges SET created_at = LEAST(created_at, $2), "
+            "updated_at = GREATEST(updated_at, $2) WHERE edge_id = $1",
             edge_id,
-            str(op.new_weight_band),
             content_timestamp,
         )
 
@@ -724,7 +802,9 @@ class Applier:
 
         col = "supporting_signals" if supporting else "disconfirming_signals"
         await conn.execute(
-            f"UPDATE edges SET {col} = array_append({col}, $2), updated_at = $3 WHERE edge_id = $1",
+            f"UPDATE edges SET {col} = array_append({col}, $2), "
+            "created_at = LEAST(created_at, $3), updated_at = GREATEST(updated_at, $3) "
+            "WHERE edge_id = $1",
             edge_id,
             signal_uuid,
             content_timestamp,
