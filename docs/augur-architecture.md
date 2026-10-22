@@ -422,4 +422,15 @@ The implications for the rest of the architecture:
 - **LLM calls during replay are sandboxed.** Extraction prompts during retroactive runs are constructed to instruct the model to reason from the historical date only, and where possible, models are selected whose training cutoff predates the replay window. The orchestration layer's model-selection capability supports this directly.
 - **The operator UI and any future read API must accept an `as_of` parameter** that scopes all queries to a historical timestamp. The default is "now," but the capability is always present.
 
+### Historical backfill (operator decision, October 2026)
+
+Retroactive seeding of the live graph, as a bounded first step before any full calibration run. Decision, scope and constraints:
+
+- **Scope.** 2026 only, at most 25 payloads per day (about 7,200 in all), headline and lead only, the same format as the live RSS sources. Widening it (2025, more per day) waits until this run shows the graph improves.
+- **Source.** Archived snapshots of feeds already in the source registry, from the Internet Archive's Wayback Machine (see `augur-sources.md`, "Archive access"). No new sources are admitted for it. Coverage in 2026 is uneven: Al Jazeera nearly daily, TASS, Bloomberg, FT and Xinhua on some days; a day's 25 are drawn with a per-source cap so one feed does not dominate.
+- **Order.** Newest first: from the earliest live data backwards, one day at a time. This is a deliberate exception to the chronological order replay otherwise uses, chosen so each processed day adds immediately usable history. It is safe because the Applier never lets an older operation override a newer state (`augur-graph-schema.md`, "Time order versus processing order"). The cost, accepted by the operator: anchoring a March signal sees the October graph, so node choice can be informed by later events. Extraction is sandboxed to the payload's date as in calibration replay, with the date instruction in the user message so the lens system prompts stay cacheable.
+- **Models and cost.** Extraction and anchoring run on a paid low-cost model (Ling 3.0 Flash at the time of writing: about $0.0007 per payload, so about $5 for the run) because the free tier has no spare capacity. Paid calls do not count against the free-tier call quota, which only free-model calls consume; the backfill has its own spend cap (`BACKFILL_BUDGET_USD`, default 4) on top of the daily budget, and stops when either is reached.
+- **Provenance.** Every signal records the model that extracted it and whether it came from live ingestion or the backfill, so backfilled material can be weighted, compared or removed later. Every call is recorded in `llm_calls` as usual.
+- **Revisit trigger:** if the backfilled history visibly improves trends and reasoning, widen scope; if it mostly adds noise, stop and consider the dedicated calibration run instead (`augur-calibration.md`).
+
 The architectural cost of replay mode is modest if it's designed in from the start. Adding it later would require backfilling timestamps and rebuilding the history mechanisms, which is significantly harder.

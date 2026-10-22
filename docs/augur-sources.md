@@ -415,6 +415,10 @@ Caveat: Yahoo's endpoint is unofficial (no SLA, may rate-limit). Acceptable for 
 
 ---
 
+## Archive access
+
+For historical backfill (`augur-architecture.md`, "Historical backfill"), an admitted RSS source may be read from archived snapshots of its own feed in the Internet Archive's Wayback Machine: the CDX API lists snapshots of the feed URL, and each snapshot yields the items the feed carried then, with their original publication dates as `content_timestamp`. This is the same source, perspective, tier and weight as live ingestion, not a new source, so it needs no admission. Snapshot coverage varies by feed and is reported per day; a day without snapshots is simply thin. Items already ingested (same content hash) are skipped.
+
 ## Source admission process
 
 Adding a new source is a deliberate operator action, not an automated discovery.

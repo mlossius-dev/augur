@@ -329,6 +329,16 @@ Every edge has `weight_history` as an append-only time series. The edge's "curre
 - A user asking "what did Augur think in March about X→Y?" gets a real answer.
 - Disconfirmation events leave durable traces in the weight history.
 
+### Time order versus processing order
+
+"Most recent" and "current" always mean latest by `content_timestamp`, never latest processed. Content can arrive out of order: a historical backfill processes March after October, and a late-arriving article can predate what the graph already holds. The Applier therefore treats an operation older than what an entity already reflects as history, not as the present:
+
+- **Stale updates go to history only.** If an operation's `content_timestamp` is earlier than the latest history entry for its target (a condition's `activation_history`, a claim's `assessment_history`, an edge's `weight_history`), the Applier appends the entry at its own timestamp and leaves `current_state`, `current_assessment` or `current_weight_band` unchanged. Its `previous_*` value is the state in force at that timestamp, read from history, not the current one.
+- **Existence reaches back to the earliest evidence.** When an operation with an earlier `content_timestamp` cites an existing node or edge (an update, a supporting or disconfirming signal, or a create that resolves to it), its `created_at` moves back to that timestamp, so an `as_of` view of the earlier date shows it.
+- **Everything else is unchanged.** Validation, alias resolution, `falsification_criteria` and the event log behave the same; the graph update event carries the operation's own `content_timestamp`.
+
+Processing order therefore never changes what the graph says about any moment, only how soon it says it.
+
 ### Provenance
 
 Every node and every edge carries `created_from` (the originating signal IDs) and is linked to:
