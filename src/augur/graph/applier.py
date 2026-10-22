@@ -60,6 +60,8 @@ from augur.graph.models import (
 from augur.graph.schema import (
     AGE_GRAPH_NAME,
     AGE_NODE_LABELS,
+    ClaimAssessment,
+    ConditionState,
     EdgeType,
     NodeType,
     WeightBand,
@@ -88,6 +90,24 @@ REJECT_MISSING_UNIT = "Quantity node requires unit in fields"
 REJECT_MISSING_CLAIM_TEXT = "Claim node requires claim_text in fields"
 REJECT_MISSING_CLAIM_KIND = "Claim node requires claim_kind in fields"
 REJECT_DEPRECATED_EDGE = "target edge is deprecated"
+
+# Fields stored in enum-typed history columns: an unknown value would fail the
+# whole batch's transaction in Postgres, so the Applier rejects the operation.
+_ENUM_FIELDS = {
+    "current_state": ConditionState,
+    "current_state_confidence": WeightBand,
+    "current_assessment": ClaimAssessment,
+}
+
+
+def invalid_enum_field(fields: dict[str, Any]) -> str | None:
+    """A rejection reason if a state/assessment field holds an unknown value."""
+    for name, enum in _ENUM_FIELDS.items():
+        value = fields.get(name)
+        if value is not None and value not in set(enum):
+            allowed = ", ".join(e.value for e in enum)
+            return f"{name} {value!r} is not one of: {allowed}"
+    return None
 
 
 class Applier:
@@ -358,8 +378,10 @@ class Applier:
         if not name:
             return self._reject(op, REJECT_MISSING_NODE_NAME, content_timestamp, source, triggered_by)
 
-        # Per-type required field validation
-        reject_reason = self._validate_node_fields(op.node_type, op.fields)
+        # Per-type required field validation, then enum-typed values
+        reject_reason = self._validate_node_fields(op.node_type, op.fields) or invalid_enum_field(
+            op.fields
+        )
         if reject_reason:
             return self._reject(op, reject_reason, content_timestamp, source, triggered_by)
 
@@ -503,6 +525,9 @@ class Applier:
             return self._reject(op, REJECT_UNRESOLVED_TARGET, content_timestamp, source, triggered_by)
 
         updates = op.field_updates
+        reject_reason = invalid_enum_field(updates or {})
+        if reject_reason:
+            return self._reject(op, reject_reason, content_timestamp, source, triggered_by)
         if not updates:
             # Nothing to do — not a rejection but also not interesting
             return GraphUpdateEvent(

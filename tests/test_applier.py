@@ -1131,3 +1131,50 @@ class TestEventLog:
 
         assert result.applied[0].event_type == "create_node_aliased"
         assert len(self._event_inserts(conn)) == 1
+
+
+class TestEnumValuedFields:
+    """Values stored in enum-typed columns are validated by the Applier, not Postgres."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [
+        ("current_state", "emerging"),
+        ("current_state_confidence", "high"),
+        ("current_assessment", "likely"),
+    ])
+    async def test_unknown_value_on_create_is_rejected(self, field, value):
+        conn = _make_conn(alias_row=None)
+        applier = _make_applier(conn)
+        op = CreateNodeOperation(
+            node_type="condition", proposed_id="c",
+            fields={"name": "War", "current_state": "active", field: value}, reasoning="t",
+        )
+        result = await applier.apply([op], content_timestamp=_TS)
+        assert len(result.rejected) == 1
+        assert field in result.rejected[0].rejection_reason
+        assert not any("INSERT INTO nodes" in str(c) for c in conn.execute.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_unknown_state_on_update_is_rejected(self):
+        conn = _make_conn(node_exists=True)
+        applier = _make_applier(conn)
+        op = UpdateNodeOperation(
+            target_node_id=str(uuid.uuid4()), field_updates={"current_state": "rising"},
+            reasoning="t",
+        )
+        result = await applier.apply([op], content_timestamp=_TS)
+        assert len(result.rejected) == 1
+        assert "current_state" in result.rejected[0].rejection_reason
+        assert not any("condition_state_history" in str(c) for c in conn.execute.call_args_list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["active", "inactive", "partially_active", "disputed", "unknown"])
+    async def test_every_known_state_is_accepted(self, state):
+        conn = _make_conn(node_exists=True)
+        applier = _make_applier(conn)
+        op = UpdateNodeOperation(
+            target_node_id=str(uuid.uuid4()), field_updates={"current_state": state},
+            reasoning="t",
+        )
+        result = await applier.apply([op], content_timestamp=_TS)
+        assert not result.rejected

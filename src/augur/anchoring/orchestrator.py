@@ -165,7 +165,13 @@ class AnchoringOrchestrator:
         log.info("anchoring.batches_formed", n=len(batches))
 
         for batch in batches:
-            result = await self.run_batch(batch)
+            try:
+                result = await self.run_batch(batch)
+            except Exception as exc:
+                # One batch's failure (its transaction rolled back, its signals
+                # left unanchored for the next cycle) must not stop the others
+                log.error("anchoring.batch_failed", batch_id=str(batch.batch_id), error=str(exc))
+                continue
             cycle.batch_results.append(result)
 
         cycle.finish()
