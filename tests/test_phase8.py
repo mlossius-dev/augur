@@ -249,6 +249,11 @@ class TestConditionSummary:
         result = _condition_summary("condition_deactivated", "Supply shortage")
         assert "deactivated" in result.lower() or "Supply shortage" in result
 
+    def test_condition_tracked_summary(self):
+        from augur.presentation.changes import _condition_summary
+        assert _condition_summary("condition_tracked", "Food crisis") == (
+            "New condition tracked, not active: Food crisis.")
+
 
 class TestChangeRecord:
     def test_dataclass_fields(self):

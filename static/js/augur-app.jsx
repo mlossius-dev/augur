@@ -106,6 +106,7 @@ function adaptChange(c) {
     downstream:   c.downstream_edge_count ?? 0,
     impactRank:   c.impact_rank ?? null,
     topicIds:     c.topic_ids || [],
+    sources:      c.sources || [],
   };
 }
 
@@ -359,9 +360,41 @@ function DomainCard({ dim, changes, selected, onClick }) {
   );
 }
 
+// ── Sources ───────────────────────────────────────────────────────────────────
+
+// Feed URLs are external content: only http(s) becomes a link
+function safeUrl(u) {
+  return typeof u === "string" && /^https?:\/\//i.test(u) ? u : null;
+}
+
+// One article behind a change or signal: feed · headline (linked) · date
+function SourceLine({ src }) {
+  const url = safeUrl(src.url);
+  const title = src.headline || src.claim_text || "(untitled)";
+  return (
+    <div style={{ fontFamily:serif, fontSize:12, lineHeight:1.4, color:P.ink2, marginTop:2 }}>
+      <span style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginRight:6 }}>
+        {src.source_id || "source"}
+      </span>
+      {url
+        ? <a href={url} target="_blank" rel="noopener noreferrer"
+             onClick={e => e.stopPropagation()}
+             style={{ color:P.natt, textDecoration:"underline", textDecorationColor:P.rule }}>
+            {title} ↗
+          </a>
+        : <span>{title}</span>}
+      {src.published_at && (
+        <span style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginLeft:6 }}>
+          {fmtRelTime(src.published_at)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── DomainLedger ──────────────────────────────────────────────────────────────
 
-function DomainLedger({ dim, changes, onClose }) {
+function DomainLedger({ dim, changes, onClose, onOpen }) {
   const st = STATES[dim.state] || STATES.Unknown;
   const dimChanges = changes.filter(c => c.dim === dim.key);
 
@@ -432,7 +465,10 @@ function DomainLedger({ dim, changes, onClose }) {
           </div>
         ) : dimChanges.map((c, i) => (
           <div key={c.id||i}
-               style={{ borderTop: i===0?`1px solid ${P.natt}`:`1px solid ${P.ruleSoft}`, padding:"8px 0" }}>
+               onClick={() => onOpen && c.targetId && onOpen(c)}
+               title="Open the reasoning behind this change"
+               style={{ borderTop: i===0?`1px solid ${P.natt}`:`1px solid ${P.ruleSoft}`, padding:"8px 0",
+                        cursor: onOpen && c.targetId ? "pointer" : "default" }}>
             <div style={{ display:"flex", justifyContent:"space-between",
                           fontFamily:mono, fontSize:9.5, color:P.ink3, marginBottom:3, letterSpacing:".04em" }}>
               <span>{fmtRelTime(c.occurredAt)}</span>
@@ -445,11 +481,15 @@ function DomainLedger({ dim, changes, onClose }) {
             <div style={{ fontFamily:serif, fontSize:13, lineHeight:1.4, color:P.natt }}>
               {c.summary}
             </div>
-            {c.downstream > 0 && (
-              <div style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginTop:3, letterSpacing:".04em" }}>
-                {c.downstream} edge{c.downstream===1?"":"s"} downstream
+            {c.sources.length > 0 && (
+              <div style={{ marginTop:4 }}>
+                {c.sources.map((src, j) => <SourceLine key={src.signal_id||j} src={src}/>)}
               </div>
             )}
+            <div style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginTop:3, letterSpacing:".04em" }}>
+              {c.downstream > 0 && `${c.downstream} edge${c.downstream===1?"":"s"} downstream · `}
+              open reasoning →
+            </div>
           </div>
         ))}
       </div>
@@ -1210,10 +1250,32 @@ function ReasoningView({ type, id, onBack, onNodeSelect, onEdgeSelect, asOf }) {
             <div className="reasoning-label">SIGNALS ({data.signals.length})</div>
             {data.signals.slice(0,6).map((s, i) => (
               <div key={s.signal_id||i} style={{ padding:"6px 0", borderBottom:`1px solid ${P.ruleSoft}` }}>
-                <div style={{ fontFamily:mono, fontSize:9, color:P.ink4 }}>{fmtRelTime(s.content_timestamp)}</div>
-                <div style={{ fontFamily:serif, fontSize:13, color:P.natt, marginTop:2 }}>
-                  {s.claim_text}
+                <div style={{ fontFamily:serif, fontSize:13, color:P.natt }}>{s.claim_text}</div>
+                <SourceLine src={{ ...s, published_at: s.content_timestamp }}/>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {data.state_history && data.state_history.length > 0 && (
+          <div className="reasoning-section">
+            <div className="reasoning-label">STATE HISTORY ({data.state_history.length})</div>
+            {data.state_history.map((h, i) => (
+              <div key={i} style={{ padding:"6px 0", borderBottom:`1px solid ${P.ruleSoft}` }}>
+                <div style={{ fontFamily:mono, fontSize:9.5, color:P.ink3 }}>
+                  {fmtRelTime(h.content_timestamp)} · {(h.previous_state||"new").replace(/_/g," ")} → {(h.new_state||"").replace(/_/g," ")}
                 </div>
+                {h.reasoning && (
+                  <div style={{ fontFamily:serif, fontSize:12.5, color:P.ink2, marginTop:2 }}>{h.reasoning}</div>
+                )}
+                {(h.sources||[]).length > 0 && (
+                  <div style={{ marginTop:3 }}>
+                    <div style={{ fontFamily:mono, fontSize:8.5, color:P.ink4, letterSpacing:".08em" }}>
+                      SOURCES (ANCHORING BATCH; THOSE NAMING THIS FIRST)
+                    </div>
+                    {h.sources.slice(0,5).map((src, j) => <SourceLine key={src.signal_id||j} src={src}/>)}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1235,6 +1297,7 @@ function ReasoningView({ type, id, onBack, onNodeSelect, onEdgeSelect, asOf }) {
       <div style={{ fontFamily:serif, fontSize:13, color:P.natt, marginTop:2 }}>
         {s.claim_text}
       </div>
+      {(s.headline || s.url) && <SourceLine src={{ ...s, published_at: null }}/>}
     </div>
   );
 
@@ -1309,7 +1372,7 @@ function ReasoningView({ type, id, onBack, onNodeSelect, onEdgeSelect, asOf }) {
 
 // ── DomainSection ─────────────────────────────────────────────────────────────
 
-function DomainSection({ dims, changes, homeError }) {
+function DomainSection({ dims, changes, homeError, navigate }) {
   const [selected, setSelected] = useState(null);
 
   return (
@@ -1345,6 +1408,7 @@ function DomainSection({ dims, changes, homeError }) {
               dim={dims.find(d => d.key === selected)}
               changes={changes||[]}
               onClose={() => setSelected(null)}
+              onOpen={c => navigate && navigate("reasoning", { rType:c.targetType, rId:c.targetId })}
             />
           )}
         </>
@@ -1564,7 +1628,7 @@ function App() {
             <YourLatitude geoData={geoData} onRequest={requestGeo}/>
           </div>
 
-          <DomainSection dims={dims} changes={changes} homeError={homeError}/>
+          <DomainSection dims={dims} changes={changes} homeError={homeError} navigate={navigate}/>
           <TopicsSection asOf={asOf} changes={changes} navigate={navigate}/>
         </>
       )}

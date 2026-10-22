@@ -47,6 +47,9 @@ class ChangeRecord:
     impact_rank: int            # Lower = more impactful (for sorting)
     downstream_edge_count: int = 0  # 1-hop live edges incident to the affected node(s)
     topic_ids: list[str] = field(default_factory=list)  # topics whose subgraph contains the target
+    # Signals of the batch behind the change, and the articles they came from
+    signal_ids: list[str] = field(default_factory=list)
+    sources: list[dict] = field(default_factory=list)
 
 
 # Impact weights for sorting
@@ -56,6 +59,7 @@ _IMPACT = {
     "edge_weakened": 3,
     "condition_activated": 4,
     "condition_deactivated": 5,
+    "condition_tracked": 6,
     "edge_created": 6,
 }
 
@@ -85,7 +89,7 @@ async def get_recent_changes(
         weight_rows = await conn.fetch(
             """
             SELECT ewh.id, ewh.edge_id, ewh.weight_band, ewh.previous_weight_band,
-                   ewh.change_type, ewh.content_timestamp,
+                   ewh.change_type, ewh.content_timestamp, ewh.triggered_by,
                    sn.name AS source_name, tn.name AS target_name,
                    e.edge_type
             FROM edge_weight_history ewh
@@ -108,7 +112,7 @@ async def get_recent_changes(
         state_rows = await conn.fetch(
             """
             SELECT csh.id, csh.node_id, csh.new_state, csh.previous_state,
-                   csh.content_timestamp, n.name AS node_name, n.description
+                   csh.content_timestamp, csh.triggered_by, n.name AS node_name, n.description
             FROM condition_state_history csh
             JOIN nodes n ON n.node_id = csh.node_id
             WHERE csh.content_timestamp BETWEEN $1 AND $2
@@ -125,6 +129,7 @@ async def get_recent_changes(
         new_edge_rows = await conn.fetch(
             """
             SELECT e.edge_id, e.edge_type, e.current_weight_band, e.created_at,
+                   e.created_from AS triggered_by,
                    sn.name AS source_name, tn.name AS target_name
             FROM edges e
             JOIN nodes sn ON sn.node_id = e.source_node_id
@@ -161,11 +166,15 @@ async def get_recent_changes(
             weight_before=row["previous_weight_band"],
             weight_after=row["weight_band"],
             impact_rank=_IMPACT.get(change_type, 9),
+            signal_ids=[str(s) for s in row.get("triggered_by") or []],
         ))
 
     for row in state_rows:
+        # A condition first recorded as inactive is a potential being tracked
+        # (a warning, a risk), not something that ended
         change_type = (
             "condition_activated" if row["new_state"] == "active"
+            else "condition_tracked" if row["previous_state"] is None
             else "condition_deactivated"
         )
         node_name = row["node_name"]
@@ -183,6 +192,7 @@ async def get_recent_changes(
             weight_before=None,
             weight_after=None,
             impact_rank=_IMPACT.get(change_type, 9),
+            signal_ids=[str(s) for s in row.get("triggered_by") or []],
         ))
 
     for row in new_edge_rows:
@@ -201,6 +211,7 @@ async def get_recent_changes(
             weight_before=None,
             weight_after=row["current_weight_band"],
             impact_rank=_IMPACT["edge_created"],
+            signal_ids=[str(s) for s in row.get("triggered_by") or []],
         ))
 
     # Deduplicate (edge might appear in weight_history AND new_edge_rows)
@@ -217,7 +228,26 @@ async def get_recent_changes(
 
     await _attach_downstream_counts(pool, result)
     await _attach_topic_membership(pool, result)
+    await _attach_sources(pool, result)
     return result
+
+
+# Articles shown per change; the reasoning view lists them all
+_SOURCES_PER_CHANGE = 3
+
+
+async def _attach_sources(pool: asyncpg.Pool, changes: list[ChangeRecord]) -> None:
+    """The articles behind each change, those about its target first (one query)."""
+    from augur.presentation.sources import fetch_signal_sources, rank_by_relevance
+
+    all_ids = sorted({sid for c in changes for sid in c.signal_ids})
+    if not all_ids:
+        return
+    async with pool.acquire() as conn:
+        by_id = await fetch_signal_sources(conn, all_ids)
+    for c in changes:
+        found = [by_id[s] for s in c.signal_ids if s in by_id]
+        c.sources = rank_by_relevance(found, c.target_name)[:_SOURCES_PER_CHANGE]
 
 
 async def _attach_downstream_counts(
@@ -378,4 +408,6 @@ def _weight_change_summary(change_type: str, edge_name: str, new_band: str) -> s
 def _condition_summary(change_type: str, name: str) -> str:
     if change_type == "condition_activated":
         return f"Condition activated: {name}."
+    if change_type == "condition_tracked":
+        return f"New condition tracked, not active: {name}."
     return f"Condition deactivated: {name}."

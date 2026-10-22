@@ -94,7 +94,8 @@ async def reasoning_node(
                 """
                 SELECT s.signal_id, s.lens_id, s.claim_text, s.reasoning,
                        s.confidence_band, s.content_timestamp,
-                       p.source_id
+                       p.source_id, p.metadata->>'headline' AS headline,
+                       p.metadata->>'url' AS url
                 FROM signals s
                 LEFT JOIN payloads p ON p.payload_id = s.payload_id
                 WHERE s.signal_id = ANY($1)
@@ -103,12 +104,13 @@ async def reasoning_node(
                 created_from,
             )
 
-        # Condition state history (if condition node)
+        # Condition state history (if condition node), each change with its articles
         state_history = []
+        state_sources: dict[str, dict[str, Any]] = {}
         if node_row["node_type"] == "condition":
             state_history = await conn.fetch(
                 """
-                SELECT new_state, previous_state, reasoning, content_timestamp
+                SELECT new_state, previous_state, reasoning, content_timestamp, triggered_by
                 FROM condition_state_history
                 WHERE node_id = $1
                   AND content_timestamp <= $2
@@ -118,8 +120,14 @@ async def reasoning_node(
                 node_id,
                 cutoff,
             )
+            from augur.presentation.sources import fetch_signal_sources
+
+            state_sources = await fetch_signal_sources(
+                conn, [s for r in state_history for s in (r["triggered_by"] or [])]
+            )
 
     import json
+    from augur.presentation.sources import rank_by_relevance
 
     def safe_json(v: Any) -> Any:
         if isinstance(v, str):
@@ -160,6 +168,8 @@ async def reasoning_node(
                 "claim_text": r["claim_text"],
                 "confidence_band": r["confidence_band"],
                 "content_timestamp": r["content_timestamp"].isoformat() if r["content_timestamp"] else None,
+                "headline": r["headline"],
+                "url": r["url"],
             }
             for r in signal_rows
         ],
@@ -169,6 +179,11 @@ async def reasoning_node(
                 "previous_state": r["previous_state"],
                 "reasoning": r["reasoning"],
                 "content_timestamp": r["content_timestamp"].isoformat() if r["content_timestamp"] else None,
+                "sources": rank_by_relevance(
+                    [state_sources[str(s)] for s in (r["triggered_by"] or [])
+                     if str(s) in state_sources],
+                    node_row["name"],
+                ),
             }
             for r in state_history
         ],
@@ -242,7 +257,8 @@ async def reasoning_edge(
             supporting_rows = await conn.fetch(
                 """
                 SELECT s.signal_id, s.lens_id, s.claim_text, s.confidence_band,
-                       s.content_timestamp, p.source_id
+                       s.content_timestamp, p.source_id,
+                       p.metadata->>'headline' AS headline, p.metadata->>'url' AS url
                 FROM signals s
                 LEFT JOIN payloads p ON p.payload_id = s.payload_id
                 WHERE s.signal_id = ANY($1)
@@ -260,7 +276,8 @@ async def reasoning_edge(
             origin_rows = await conn.fetch(
                 """
                 SELECT s.signal_id, s.lens_id, s.claim_text, s.confidence_band,
-                       s.content_timestamp, p.source_id
+                       s.content_timestamp, p.source_id,
+                       p.metadata->>'headline' AS headline, p.metadata->>'url' AS url
                 FROM signals s
                 LEFT JOIN payloads p ON p.payload_id = s.payload_id
                 WHERE s.signal_id = ANY($1)
@@ -277,7 +294,8 @@ async def reasoning_edge(
             disconf_rows = await conn.fetch(
                 """
                 SELECT s.signal_id, s.lens_id, s.claim_text, s.confidence_band,
-                       s.content_timestamp, p.source_id
+                       s.content_timestamp, p.source_id,
+                       p.metadata->>'headline' AS headline, p.metadata->>'url' AS url
                 FROM signals s
                 LEFT JOIN payloads p ON p.payload_id = s.payload_id
                 WHERE s.signal_id = ANY($1)
@@ -308,6 +326,8 @@ async def reasoning_edge(
             "claim_text": r["claim_text"],
             "confidence_band": r["confidence_band"],
             "content_timestamp": r["content_timestamp"].isoformat() if r["content_timestamp"] else None,
+            "headline": r["headline"],
+            "url": r["url"],
         }
 
     return JSONResponse({
