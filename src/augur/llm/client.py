@@ -77,9 +77,11 @@ class LLMQuotaExceededError(LLMBudgetExceededError):
     """Raised when the daily LLM call quota has been reached."""
 
 
-def _extra_body(chain: ModelChain, trace: dict[str, Any]) -> dict[str, Any]:
-    """OpenRouter-specific request fields: cost reporting, trace, fallbacks."""
-    body: dict[str, Any] = {"usage": {"include": True}, "trace": trace}
+def _extra_body(
+    chain: ModelChain, trace: dict[str, Any], extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """OpenRouter-specific request fields: cost reporting, trace, fallbacks, extras."""
+    body: dict[str, Any] = {**(extra or {}), "usage": {"include": True}, "trace": trace}
     if len(chain) > 1:
         # One request; OpenRouter moves down the list when a model errors
         body["models"] = list(chain)
@@ -152,6 +154,7 @@ class LLMClient:
         model_routing: dict[PipelineStage, ModelChain] | None = None,
         daily_call_limit: int | None = None,
         calls_per_minute: int | None = None,
+        extra_request: dict[str, Any] | None = None,
     ) -> None:
         self._daily_budget = daily_budget_usd
         self._call_log = call_log
@@ -159,6 +162,8 @@ class LLMClient:
         self._model_routing = model_routing or dict(DEFAULT_MODEL_ROUTING)
         self._daily_call_limit = daily_call_limit
         self._calls_per_minute = calls_per_minute
+        # Extra OpenRouter request fields for every call, e.g. {"reasoning": {...}}
+        self._extra_request = extra_request
         # Serialises the quota check and the call's record within this process,
         # so concurrent calls (lenses run in parallel) cannot all pass one check.
         self._quota_lock = asyncio.Lock()
@@ -302,7 +307,7 @@ class LLMClient:
                     model=model,
                     messages=messages,  # type: ignore[arg-type]
                     temperature=temperature,
-                    extra_body=_extra_body(chain, trace),
+                    extra_body=_extra_body(chain, trace, self._extra_request),
                 )
                 break
             except Exception as exc:

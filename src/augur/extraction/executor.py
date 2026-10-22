@@ -33,6 +33,16 @@ log = structlog.get_logger(__name__)
 _VALID_CONFIDENCE_BANDS = {b.value for b in ConfidenceBand}
 
 
+def backfill_date_note(content_timestamp: datetime) -> str:
+    """The replay instruction for a backfilled payload: reason as of its date."""
+    day = content_timestamp.strftime("%d %B %Y")
+    return (
+        f"The current date is {day}. You are reading this on {day}: do not use "
+        "or refer to anything that happened after it, even if you know of it. "
+        "Use only the information in the payload below.\n\n"
+    )
+
+
 class LensExecutor:
     """
     Runs extraction lenses against payloads.
@@ -67,6 +77,10 @@ class LensExecutor:
         from augur.llm.models import PipelineStage
 
         user_message = f"<payload source_id={source_id!r}>\n{content}\n</payload>"
+        if self._origin == "backfill":
+            # Sandbox to the payload's date (docs/augur-calibration.md, replay).
+            # In the user message, not the system prompt, so lens prompts stay cacheable.
+            user_message = backfill_date_note(content_timestamp) + user_message
 
         try:
             response = await self._llm.complete(
@@ -80,6 +94,7 @@ class LensExecutor:
                     "lens_id": lens.lens_id,
                     "source_id": source_id,
                     "payload_id": str(payload_id),
+                    **({"backfill": True} if self._origin == "backfill" else {}),
                 },
             )
         except Exception as exc:

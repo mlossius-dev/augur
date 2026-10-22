@@ -107,9 +107,13 @@ class AnchoringOrchestrator:
         self,
         pool: asyncpg.Pool,
         llm_client: LLMClient,
+        *,
+        call_metadata: dict | None = None,
     ) -> None:
         self._pool = pool
         self._llm = llm_client
+        # Added to every anchoring call's metadata, e.g. {"backfill": True}
+        self._call_metadata = call_metadata or {}
         self._tier_a = TierAStore(pool)
         self._reader = GraphReader(pool)
         self._applier = Applier(pool)
@@ -124,6 +128,7 @@ class AnchoringOrchestrator:
         limit: int = 200,
         force: bool = False,
         max_hold_hours: float | None = 6.0,
+        origin: str | None = None,
     ) -> AnchoringCycleResult:
         """
         Run one full anchoring cycle.
@@ -147,6 +152,7 @@ class AnchoringOrchestrator:
             lens_id=lens_id,
             min_age_hours=min_age_hours,
             limit=limit,
+            origin=origin,
         )
 
         if not signals:
@@ -220,6 +226,7 @@ class AnchoringOrchestrator:
                     "batch_id": str(batch.batch_id),
                     "n_signals": len(batch.signals),
                     "lens_ids": list(batch.lens_ids),
+                    **self._call_metadata,
                 },
             )
         except LLMCallError as exc:
