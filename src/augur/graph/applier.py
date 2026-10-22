@@ -159,7 +159,7 @@ class Applier:
                         triggered_by=_triggered_by,
                         llm_call_ids=_call_ids,
                     )
-                    (result.applied if not event.rejected else result.rejected).append(event)
+                    await self._collect(event, result, conn)
 
                 # ── Step 2: update nodes ──────────────────────────────────────
                 for op in update_nodes:
@@ -169,7 +169,7 @@ class Applier:
                         source=source,
                         triggered_by=_triggered_by,
                     )
-                    (result.applied if not event.rejected else result.rejected).append(event)
+                    await self._collect(event, result, conn)
 
                 # ── Step 3: create edges ──────────────────────────────────────
                 for op in create_edges:
@@ -180,7 +180,7 @@ class Applier:
                         triggered_by=_triggered_by,
                         llm_call_ids=_call_ids,
                     )
-                    (result.applied if not event.rejected else result.rejected).append(event)
+                    await self._collect(event, result, conn)
 
                 # ── Step 4: update edge weights ───────────────────────────────
                 for op in update_weights:
@@ -190,7 +190,7 @@ class Applier:
                         source=source,
                         triggered_by=_triggered_by,
                     )
-                    (result.applied if not event.rejected else result.rejected).append(event)
+                    await self._collect(event, result, conn)
 
                 # ── Step 5: add supporting / disconfirming signals ────────────
                 for op in add_supporting:
@@ -200,7 +200,7 @@ class Applier:
                         source=source,
                         triggered_by=_triggered_by,
                     )
-                    (result.applied if not event.rejected else result.rejected).append(event)
+                    await self._collect(event, result, conn)
 
                 for op in add_disconfirming:
                     event = await self._apply_add_signal(
@@ -209,7 +209,7 @@ class Applier:
                         source=source,
                         triggered_by=_triggered_by,
                     )
-                    (result.applied if not event.rejected else result.rejected).append(event)
+                    await self._collect(event, result, conn)
 
         log.info(
             "applier.batch_done",
@@ -219,6 +219,23 @@ class Applier:
         return result
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    async def _collect(
+        self, event: GraphUpdateEvent, result: ApplierResult, conn: asyncpg.Connection
+    ) -> None:
+        """
+        Sort an event into applied or rejected.  Applied mutations record
+        themselves; rejections and alias matches are recorded here, so the
+        event log holds every operation the Applier was given, and anchoring
+        quality (rejection rates) can be read from it.
+        """
+        if event.rejected:
+            result.rejected.append(event)
+            await self._record_event(event, conn)
+        else:
+            result.applied.append(event)
+            if event.event_type == "create_node_aliased":
+                await self._record_event(event, conn)
 
     def _reject(
         self,
