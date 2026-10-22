@@ -63,6 +63,11 @@ class CallLog(Protocol):
     async def calls_since(self, since: datetime) -> int: ...
 
 
+def _is_free_call(model: str) -> bool:
+    """A call that draws on the free tier: a free model, or a chain naming one."""
+    return ":free" in model or "openrouter/free" in model
+
+
 def _json(value: Any) -> str:
     # Metadata carries UUIDs, datetimes and enums; store their string form.
     return json.dumps(value, default=str)
@@ -133,9 +138,12 @@ class PostgresCallLog:
 
     async def calls_since(self, since: datetime) -> int:
         return await self._get_pool().fetchval(
-            # OpenRouter counts every attempt; a call still in flight counts once
+            # OpenRouter counts every attempt; a call still in flight counts once.
+            # Only free-model calls consume the free tier's quota; a paid model's
+            # name never contains ':free' or 'openrouter/free'.
             "SELECT COALESCE(sum(GREATEST(attempts, 1)), 0) FROM llm_calls"
-            " WHERE called_at >= $1",
+            " WHERE called_at >= $1"
+            " AND (model LIKE '%:free%' OR model LIKE '%openrouter/free%')",
             since,
         )
 
@@ -168,8 +176,9 @@ class InMemoryCallLog:
     async def calls_since(self, since: datetime) -> int:
         return sum(
             max(end.attempts if end else 0, 1)
-            for _, end, called_at in self.calls.values()
+            for start, end, called_at in self.calls.values()
             if called_at >= since
+            and (_is_free_call(start.model) or (end and end.model and _is_free_call(end.model)))
         )
 
     async def budgeted_spend_for(self, day: date) -> Decimal:

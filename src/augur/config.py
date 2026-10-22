@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # days; accepted payloads are kept (docs/augur-signal-pipeline.md).
     rejected_payload_retention_days: int = 30
 
+    # ── Historical backfill ───────────────────────────────────────────────────
+    # Total spend cap for the backfill's paid calls (docs/augur-architecture.md,
+    # "Historical backfill"), on top of the daily budget.
+    backfill_budget_usd: float = 4.0
+
     # ── Model routing overrides ───────────────────────────────────────────────
     # Empty = the default in augur.llm.models (openrouter/free for every stage).
     augur_model_extraction: str = ""

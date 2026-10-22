@@ -113,8 +113,6 @@ def migrate() -> None:
 
 
 async def _migrate_async() -> None:
-    from pathlib import Path
-
     from augur.config import get_settings
     from augur.db.connection import close_db, get_raw_pool, init_db
 
@@ -124,36 +122,13 @@ async def _migrate_async() -> None:
     typer.echo("Running migrations…")
     await init_db(settings)
 
-    migrations_dir = Path(__file__).parent.parent / "db" / "migrations"
-    migration_files = sorted(migrations_dir.glob("*.sql"))
+    from augur.db.migrate import MIGRATIONS_DIR, apply_pending_migrations
 
-    pool = get_raw_pool()
-    applied_count = 0
-
-    async with pool.acquire() as conn:
-        # schema_migrations may not exist yet on a fresh database
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                id          SERIAL      PRIMARY KEY,
-                version     TEXT        NOT NULL UNIQUE,
-                description TEXT        NOT NULL,
-                applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-        for f in migration_files:
-            version = f.stem.split("_")[0]
-            already = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)",
-                version,
-            )
-            if already:
-                typer.echo(f"  skip  {f.name}")
-                continue
-            typer.echo(f"  apply {f.name}")
-            await conn.execute(f.read_text())
-            applied_count += 1
+    async with get_raw_pool().acquire() as conn:
+        applied = await apply_pending_migrations(conn)
+    for f in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        typer.echo(f"  {'apply' if f.name in applied else 'skip '} {f.name}")
+    applied_count = len(applied)
 
     await close_db()
 

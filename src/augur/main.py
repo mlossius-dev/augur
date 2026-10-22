@@ -141,39 +141,10 @@ async def _run_migrations() -> None:
     Phase 0 ships one migration (000_init.sql) that verifies extensions and
     creates the schema_migrations table.  Future phases add to this directory.
     """
-    from pathlib import Path
-
     from augur.db.connection import get_raw_pool
+    from augur.db.migrate import apply_pending_migrations
 
-    migrations_dir = Path(__file__).parent / "db" / "migrations"
-    migration_files = sorted(migrations_dir.glob("*.sql"))
-
-    pool = get_raw_pool()
-    async with pool.acquire() as conn:
-        # schema_migrations may not exist yet on a fresh database
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                id          SERIAL      PRIMARY KEY,
-                version     TEXT        NOT NULL UNIQUE,
-                description TEXT        NOT NULL,
-                applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
-
-        for migration_file in migration_files:
-            version = migration_file.stem.split("_")[0]
-            already_applied = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)",
-                version,
-            )
-            if already_applied:
-                continue
-            sql = migration_file.read_text()
-            log.info("migration.applying", version=version, file=migration_file.name)
-            await conn.execute(sql)
-            log.info("migration.applied", version=version)
-
+    async with get_raw_pool().acquire() as conn:
+        await apply_pending_migrations(conn)
 
 app = create_app()

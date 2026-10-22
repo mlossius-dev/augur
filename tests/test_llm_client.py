@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -586,3 +587,111 @@ class TestExtractionCap:
         from augur.scheduler import cap_extraction_payloads
 
         assert cap_extraction_payloads(["only"], calls_per_run=3, calls_per_payload=8) == ["only"]
+
+
+class TestPaidCallsAndTheFreeQuota:
+    """Paid models are bounded by the dollar budget, not the free tier's call quota."""
+
+    PAID = ("vendor/paid-model",)
+
+    @pytest.mark.asyncio
+    async def test_paid_calls_bypass_an_exhausted_quota(self, llm_client_kwargs) -> None:
+        from augur.llm.client import LLMClient, LLMQuotaExceededError
+
+        free = LLMClient(**llm_client_kwargs, daily_call_limit=1, calls_per_minute=100)
+        _stub(free)
+        await _complete(free)
+        with pytest.raises(LLMQuotaExceededError):
+            await _complete(free)
+
+        paid = LLMClient(
+            **{**llm_client_kwargs, "call_log": free._call_log},
+            daily_call_limit=1, calls_per_minute=1,
+            model_routing={stage: self.PAID for stage in PipelineStage},
+        )
+        main_create, _ = _stub(paid)
+        for _ in range(3):
+            await _complete(paid)  # neither the daily nor the minute quota applies
+        assert main_create.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_paid_calls_do_not_count_against_the_quota(self, llm_client_kwargs) -> None:
+        from augur.llm.client import LLMClient
+
+        paid = LLMClient(
+            **llm_client_kwargs, model_routing={stage: self.PAID for stage in PipelineStage},
+        )
+        _stub(paid)
+        await _complete(paid)
+        assert await paid._call_log.calls_since(datetime.now(UTC) - timedelta(minutes=5)) == 0
+
+
+class TestSignalProvenance:
+    """Signals record the model that extracted them and their origin."""
+
+    FIXTURE = Path(__file__).parent / "fixtures" / "financial_lens_nemotron_super.json"
+
+    class _Recorded:
+        """Replays a recorded lens output, as the LLM client would return it."""
+
+        def __init__(self, content: str, model: str) -> None:
+            self.content, self.model = content, model
+
+        async def complete(self, **_kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(content=self.content, model=self.model, call_id="c",
+                                   prompt_tokens=0, completion_tokens=0)
+
+    async def _extract(self, origin: str | None):
+        from augur.extraction.executor import LensExecutor
+        from augur.extraction.lenses import ACTIVE_LENSES
+
+        llm = self._Recorded(self.FIXTURE.read_text(encoding="utf-8"),
+                             "nvidia/nemotron-3-super-120b-a12b:free")
+        executor = LensExecutor(llm) if origin is None else LensExecutor(llm, origin=origin)
+        lens = next(l for l in ACTIVE_LENSES if l.lens_id == "financial")
+        return await executor.extract(
+            payload_id=uuid4(), content="USD/JPY rose 0.32% over five days.",
+            content_timestamp=datetime(2026, 3, 1, tzinfo=UTC), source_id="yahoo_finance",
+            lens=lens,
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_extraction_records_model_and_origin(self) -> None:
+        signals = await self._extract(origin=None)
+        assert signals
+        assert {(s["extracted_by"], s["origin"]) for s in signals} == {
+            ("nvidia/nemotron-3-super-120b-a12b:free", "live")}
+
+    @pytest.mark.asyncio
+    async def test_backfill_extraction_is_marked(self) -> None:
+        signals = await self._extract(origin="backfill")
+        assert signals and all(s["origin"] == "backfill" for s in signals)
+
+
+@requires_db()
+class TestPostgresQuotaCountsFreeCallsOnly:
+    @pytest.mark.asyncio
+    async def test_a_paid_call_leaves_the_quota_untouched(self) -> None:
+        import asyncpg
+
+        from augur.llm.call_log import PostgresCallLog
+
+        dsn = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+        pool = await asyncpg.create_pool(
+            dsn, server_settings={"search_path": 'ag_catalog, "$user", public'})
+        log = PostgresCallLog(pool)
+        since = datetime.now(UTC) - timedelta(seconds=1)
+        ids = [uuid4(), uuid4()]
+        try:
+            before = await log.calls_since(since)
+            for call_id, model in zip(ids, ("vendor/paid-model", "vendor/some:free")):
+                await log.start(LLMCallStart(
+                    call_id=call_id, stage="extraction", prompt_template_id="t",
+                    model=model, is_free_tier=False, temperature=0.1, metadata={},
+                    messages=[{"role": "user", "content": "x"}]))
+            assert await log.calls_since(since) == before + 1
+        finally:
+            await pool.execute("DELETE FROM llm_calls WHERE call_id = ANY($1)", ids)
+            await pool.close()
