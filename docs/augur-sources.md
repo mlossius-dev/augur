@@ -355,6 +355,21 @@ Each entry below uses an abbreviated form. The full registry lives in a structur
 #### Southeast Asia and Pacific
 - Nikkei Asia, The Straits Times, Tempo (Indonesia), The Jakarta Post, Bangkok Post, ABC News (Australia), Sydney Morning Herald.
 
+#### Registry additions and removals (operator decision, October 2026)
+
+The pipeline missed riots in France and other European developments because the registry held no European national press: its US/EU pool was wires and financial press, several of them dead. Breadth ranking (`augur-signal-pipeline.md`, "Which payloads are read") only lifts a story several sources carry, so a region no source covers cannot rise.
+
+Added, each tested for a live feed with leads and for Wayback coverage (for backfill):
+
+- **US/EU:** BBC News (0.75), Le Monde English (0.72), The Guardian (0.70; blocks Wayback, live only), Deutsche Welle (0.70), France 24 (0.68), Politico Europe (0.68), El País English (0.65), Euronews (0.60).
+- **Nordic:** NRK (0.72), Dagens Næringsliv (0.72), Aftenposten (0.68), Yle News English (0.68), SVT Nyheter (0.65; not archived, live only).
+
+Left out: Der Spiegel International (feed a week stale), DR (no leads), NRK Urix (overlaps NRK, not archived).
+
+Nordic-language headlines rarely share words with English ones, so breadth ranking seldom picks a Norwegian or Swedish item unless several Nordic sources carry it. Accepted for now; **revisit** if Nordic stories the operator expects are not read.
+
+Disabled because no payload was ever fetched from them: Reuters (feeds.reuters.com no longer resolves), AP via RSSHub (403), CGTN (404), Dawn (404), Caixin (403). Replacements are open.
+
 ### Tier 4 — Aggregators, opinion, social, crowdsourced
 
 This tier is **deliberately small at start**. Tier 4 sources are added cautiously because their noise-to-signal ratio is high and adding them blindly poisons the convergence detection.
