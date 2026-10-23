@@ -75,6 +75,7 @@ A graph change is impactful when:
 - A new edge was created with a starting weight of `moderate` or higher.
 - A disconfirmation pass meaningfully weakened a previously high-weight edge.
 - A new event node was created that connects to active conditions.
+- A tracked market instrument moved sharply over its reporting window (operator decision, October 2026): at least 3% for commodities and equity indices, 1.5% for currencies, 5% for bond yields, over the structured-data sources' five trading days. This is data, not a graph mutation, and is labelled as a market move; it is shown because a sharp move in oil or a major index is often the first sign of a development the graph has not yet anchored.
 
 The 24-hour window is fixed, not configurable. The point is rhythm — Augur is something you can check daily and reliably see what mattered yesterday. Longer windows are available via the time scrubber (level 4), not by adjusting this view.
 
