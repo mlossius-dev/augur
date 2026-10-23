@@ -47,6 +47,7 @@ async def gather_evidence(
             WHERE n.node_type = 'condition'
               AND n.type_data->>'current_state' = 'active'
               AND n.created_at <= $1
+              AND n.merged_into IS NULL
             ORDER BY n.updated_at DESC
             LIMIT 100
             """,

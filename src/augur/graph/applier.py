@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -48,6 +48,7 @@ import structlog
 
 from augur.graph.alias_resolver import AliasResolver
 from augur.graph.models import (
+    MergeNodesOperation,
     AddDisconfirmingSignalOperation,
     AddSupportingSignalOperation,
     ApplierResult,
@@ -90,6 +91,15 @@ REJECT_MISSING_UNIT = "Quantity node requires unit in fields"
 REJECT_MISSING_CLAIM_TEXT = "Claim node requires claim_text in fields"
 REJECT_MISSING_CLAIM_KIND = "Claim node requires claim_kind in fields"
 REJECT_DEPRECATED_EDGE = "target edge is deprecated"
+REJECT_MERGE_SAME_NODE = "survivor and absorbed are the same node"
+REJECT_MERGE_ALREADY_MERGED = "node is already merged into another"
+REJECT_MERGE_TYPE_CHANGE = (
+    "different node types merge only with allow_type_change, and only when the "
+    "absorbed node has no activation or assessment history"
+)
+
+# Strongest first: which of two duplicate edges a merge keeps
+_BAND_RANK = {"strong": 4, "moderate": 3, "weak": 2, "provisional": 1, "disputed": 0}
 
 # Fields stored in enum-typed history columns: an unknown value would fail the
 # whole batch's transaction in Postgres, so the Applier rejects the operation.
@@ -292,7 +302,8 @@ class Applier:
             exists = await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = $1)", node_id
             )
-            return node_id if exists else None
+            # A merged-away node resolves to its survivor
+            return await self._follow_merges(conn, node_id) if exists else None
         except ValueError:
             # slug: look up in batch id_map
             return id_map.get(ref)
@@ -355,6 +366,294 @@ class Applier:
             node_ids,
             content_timestamp,
         )
+
+    @staticmethod
+    async def _follow_merges(conn: asyncpg.Connection, node_id: UUID) -> UUID:
+        """The node a (possibly merged-away) node now lives in."""
+        for _ in range(10):  # merges chain at most a few deep
+            survivor = await conn.fetchval(
+                "SELECT merged_into FROM nodes WHERE node_id = $1", node_id
+            )
+            if not isinstance(survivor, UUID):
+                return node_id
+            node_id = survivor
+        return node_id
+
+    # ── merge_nodes (operator-only) ───────────────────────────────────────────
+
+    async def merge_nodes(
+        self, op: MergeNodesOperation, *, source: str = "operator"
+    ) -> GraphUpdateEvent:
+        """
+        Merge `op.absorbed_id` into `op.survivor_id` in one transaction.
+
+        docs/augur-graph-schema.md, "Merging duplicate nodes": edges, history,
+        references, aliases and provenance move to the survivor; duplicate
+        edges collapse without reweighting; the absorbed node stays as a
+        tombstone.  The event carries the processing time: a merge is an
+        identity correction, not something that happened in the world.
+        """
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                event = await self._merge(op, conn, now=now, source=source)
+                await self._record_event(event, conn)
+        log.info("applier.merge_nodes", survivor=op.survivor_id, absorbed=op.absorbed_id,
+                 rejected=event.rejected, reason=event.rejection_reason)
+        return event
+
+    async def _merge(
+        self, op: MergeNodesOperation, conn: asyncpg.Connection, *, now: datetime, source: str
+    ) -> GraphUpdateEvent:
+        try:
+            survivor_id, absorbed_id = UUID(op.survivor_id), UUID(op.absorbed_id)
+        except ValueError:
+            return self._reject(op, REJECT_UNRESOLVED_TARGET, now, source, [])
+        if survivor_id == absorbed_id:
+            return self._reject(op, REJECT_MERGE_SAME_NODE, now, source, [])
+
+        rows = {
+            r["node_id"]: r
+            for r in await conn.fetch(
+                "SELECT * FROM nodes WHERE node_id = ANY($1) FOR UPDATE",
+                [survivor_id, absorbed_id],
+            )
+        }
+        if survivor_id not in rows or absorbed_id not in rows:
+            return self._reject(op, REJECT_UNRESOLVED_TARGET, now, source, [])
+        survivor, absorbed = rows[survivor_id], rows[absorbed_id]
+        if survivor["merged_into"] is not None or absorbed["merged_into"] is not None:
+            return self._reject(op, REJECT_MERGE_ALREADY_MERGED, now, source, [])
+
+        if survivor["node_type"] != absorbed["node_type"]:
+            history = await conn.fetchval(
+                "SELECT (SELECT count(*) FROM condition_state_history WHERE node_id = $1)"
+                " + (SELECT count(*) FROM claim_assessment_history WHERE node_id = $1)",
+                absorbed_id,
+            )
+            if not op.allow_type_change or history:
+                return self._reject(op, REJECT_MERGE_TYPE_CHANGE, now, source, [])
+
+        moved = await self._merge_edges(conn, survivor_id, absorbed_id)
+        history = await self._merge_history(conn, survivor_id, absorbed_id, survivor["node_type"])
+        references = await self._merge_references(conn, survivor, absorbed)
+
+        # Provenance: union; existence from the earlier, activity to the later
+        await conn.execute(
+            """
+            UPDATE nodes s SET
+                created_from = ARRAY(SELECT DISTINCT unnest(s.created_from || a.created_from)),
+                llm_call_ids = ARRAY(SELECT DISTINCT unnest(s.llm_call_ids || a.llm_call_ids)),
+                created_at   = LEAST(s.created_at, a.created_at),
+                updated_at   = GREATEST(s.updated_at, a.updated_at)
+            FROM nodes a
+            WHERE s.node_id = $1 AND a.node_id = $2
+            """,
+            survivor_id,
+            absorbed_id,
+        )
+        # Tombstone: kept, never deleted
+        await conn.execute(
+            "UPDATE nodes SET merged_into = $2, merged_at = $3 WHERE node_id = $1",
+            absorbed_id,
+            survivor_id,
+            now,
+        )
+        await self._age_merge_vertex(conn, absorbed_id, moved["kept"])
+
+        snapshot = {
+            "absorbed": {k: absorbed[k] for k in
+                         ("node_id", "node_type", "name", "description", "type_data",
+                          "created_from", "created_at", "updated_at")},
+            "edges_repointed": [str(e) for e in moved["repointed"]],
+            "edges_deprecated": [str(e) for e in moved["deprecated"]],
+            "history_moved": history,
+            **references,
+        }
+        return GraphUpdateEvent(
+            event_type="merge_nodes",
+            target_node_id=survivor_id,
+            operation_data={**op.model_dump(), "snapshot": snapshot},
+            triggered_by=[],
+            reasoning=op.reasoning,
+            content_timestamp=now,
+            source=source,
+        )
+
+    async def _merge_edges(
+        self, conn: asyncpg.Connection, survivor_id: UUID, absorbed_id: UUID
+    ) -> dict[str, list[UUID]]:
+        """Re-point the absorbed node's edges; deprecate self-loops and duplicates."""
+        repointed = [
+            r["edge_id"] for r in await conn.fetch(
+                """
+                UPDATE edges SET
+                    source_node_id = CASE WHEN source_node_id = $2 THEN $1 ELSE source_node_id END,
+                    target_node_id = CASE WHEN target_node_id = $2 THEN $1 ELSE target_node_id END
+                WHERE source_node_id = $2 OR target_node_id = $2
+                RETURNING edge_id
+                """,
+                survivor_id,
+                absorbed_id,
+            )
+        ]
+        deprecated: list[UUID] = []
+        # Self-loops: the two nodes were linked to each other
+        deprecated += [
+            r["edge_id"] for r in await conn.fetch(
+                "UPDATE edges SET deprecated = TRUE, deprecated_at = now() "
+                "WHERE source_node_id = $1 AND target_node_id = $1 AND NOT deprecated "
+                "RETURNING edge_id",
+                survivor_id,
+            )
+        ]
+        # Duplicates: same source, target and type now; keep the strongest
+        groups = await conn.fetch(
+            """
+            SELECT array_agg(edge_id) AS ids, array_agg(current_weight_band::text) AS bands,
+                   array_agg(created_at) AS created
+            FROM edges
+            WHERE (source_node_id = $1 OR target_node_id = $1) AND NOT deprecated
+            GROUP BY source_node_id, target_node_id, edge_type
+            HAVING count(*) > 1
+            """,
+            survivor_id,
+        )
+        for g in groups:
+            members = sorted(
+                zip(g["ids"], g["bands"], g["created"]),
+                key=lambda m: (-_BAND_RANK.get(m[1], 0), m[2]),
+            )
+            keep, drop = members[0][0], [m[0] for m in members[1:]]
+            await conn.execute(
+                """
+                UPDATE edges k SET
+                    supporting_signals    = ARRAY(SELECT DISTINCT unnest(k.supporting_signals
+                                              || (SELECT coalesce(array_agg(x), '{}') FROM edges d,
+                                                  unnest(d.supporting_signals) x WHERE d.edge_id = ANY($2)))),
+                    disconfirming_signals = ARRAY(SELECT DISTINCT unnest(k.disconfirming_signals
+                                              || (SELECT coalesce(array_agg(x), '{}') FROM edges d,
+                                                  unnest(d.disconfirming_signals) x WHERE d.edge_id = ANY($2)))),
+                    created_from          = ARRAY(SELECT DISTINCT unnest(k.created_from
+                                              || (SELECT coalesce(array_agg(x), '{}') FROM edges d,
+                                                  unnest(d.created_from) x WHERE d.edge_id = ANY($2)))),
+                    created_at            = LEAST(k.created_at,
+                                              (SELECT min(created_at) FROM edges WHERE edge_id = ANY($2)))
+                WHERE k.edge_id = $1
+                """,
+                keep,
+                drop,
+            )
+            await conn.execute(
+                "UPDATE edges SET deprecated = TRUE, deprecated_at = now() WHERE edge_id = ANY($1)",
+                drop,
+            )
+            deprecated += drop
+        kept = [e for e in repointed if e not in set(deprecated)]
+        return {"repointed": repointed, "deprecated": deprecated, "kept": kept}
+
+    async def _merge_history(
+        self, conn: asyncpg.Connection, survivor_id: UUID, absorbed_id: UUID, survivor_type: str
+    ) -> dict[str, int]:
+        """Re-point state histories; the survivor's state is the latest by content time."""
+        moved: dict[str, int] = {}
+        for table, value_col, field in (
+            ("condition_state_history", "new_state", "current_state"),
+            ("claim_assessment_history", "new_assessment", "current_assessment"),
+        ):
+            status = await conn.execute(
+                f"UPDATE {table} SET node_id = $1 WHERE node_id = $2", survivor_id, absorbed_id
+            )
+            moved[table] = int(status.split()[-1])
+            if moved[table] and survivor_type in ("condition", "claim"):
+                latest = await conn.fetchval(
+                    f"SELECT {value_col}::text FROM {table} WHERE node_id = $1 "
+                    "ORDER BY content_timestamp DESC LIMIT 1",
+                    survivor_id,
+                )
+                if latest is not None:
+                    await conn.execute(
+                        "UPDATE nodes SET type_data = type_data || jsonb_build_object($2::text, $3::text) "
+                        "WHERE node_id = $1",
+                        survivor_id,
+                        field,
+                        latest,
+                    )
+        return moved
+
+    async def _merge_references(
+        self, conn: asyncpg.Connection, survivor: Any, absorbed: Any
+    ) -> dict[str, Any]:
+        """Topics, scenarios and aliases follow the survivor."""
+        sid, aid = survivor["node_id"], absorbed["node_id"]
+        topics = [
+            r["topic_id"] for r in await conn.fetch(
+                "SELECT topic_id FROM topic_nodes WHERE node_id = $1", aid)
+        ]
+        await conn.execute(
+            """
+            INSERT INTO topic_nodes (topic_id, node_id, notes)
+            SELECT topic_id, $1, notes FROM topic_nodes WHERE node_id = $2
+            ON CONFLICT DO NOTHING
+            """,
+            sid,
+            aid,
+        )
+        await conn.execute("DELETE FROM topic_nodes WHERE node_id = $1", aid)
+        scenarios = await conn.execute(
+            "UPDATE scenarios SET key_condition_ids = array_replace(key_condition_ids, $2, $1) "
+            "WHERE $2 = ANY(key_condition_ids)",
+            sid,
+            aid,
+        )
+        # The absorbed node's aliases, and its own name, now resolve to the survivor
+        await conn.execute(
+            "UPDATE aliases SET canonical_node_id = $1, canonical_name = $2 "
+            "WHERE canonical_node_id = $3",
+            sid,
+            survivor["name"],
+            aid,
+        )
+        await conn.execute(
+            """
+            INSERT INTO aliases (alias_text, canonical_node_id, canonical_name, added_by)
+            VALUES ($1, $2, $3, 'operator')
+            ON CONFLICT (alias_text) DO NOTHING
+            """,
+            absorbed["name"],
+            sid,
+            survivor["name"],
+        )
+        return {
+            "topics": [str(t) for t in topics],
+            "scenarios_updated": int(scenarios.split()[-1]),
+        }
+
+    async def _age_merge_vertex(
+        self, conn: asyncpg.Connection, absorbed_id: UUID, kept_edges: list[UUID]
+    ) -> None:
+        """Mirror the merge in AGE: drop the absorbed vertex, re-create its moved edges."""
+        cypher = (
+            f"SELECT * FROM cypher('{AGE_GRAPH_NAME}', $$"
+            f" MATCH (a {{node_id: '{absorbed_id}'}}) DETACH DELETE a"
+            f"$$) AS (v agtype)"
+        )
+        try:
+            async with conn.transaction():  # savepoint, as in _age_create_vertex
+                await conn.execute("LOAD 'age'")
+                await conn.execute("SET search_path = ag_catalog, \"$user\", public")
+                await conn.execute(cypher)
+        except Exception as exc:
+            log.error("applier.age_merge_failed", node_id=str(absorbed_id), error=str(exc))
+        for row in await conn.fetch(
+            "SELECT edge_id, source_node_id, target_node_id, edge_type FROM edges "
+            "WHERE edge_id = ANY($1)",
+            kept_edges,
+        ):
+            await self._age_create_edge(
+                conn, row["edge_id"], row["source_node_id"], row["target_node_id"],
+                EdgeType(row["edge_type"]),
+            )
 
     # ── create_node ───────────────────────────────────────────────────────────
 

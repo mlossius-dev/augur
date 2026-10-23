@@ -44,11 +44,12 @@ async def get_pipeline_health(pool: asyncpg.Pool) -> dict[str, Any]:
         graph_row = await conn.fetchrow(
             """
             SELECT
-                -- Nodes are never deprecated (the schema has no such column); edges are
-                (SELECT COUNT(*) FROM nodes) AS live_nodes,
-                0 AS deprecated_nodes,
+                -- Nodes are never deleted; a merged-away node is a tombstone
+                (SELECT COUNT(*) FROM nodes WHERE merged_into IS NULL) AS live_nodes,
+                (SELECT COUNT(*) FROM nodes WHERE merged_into IS NOT NULL) AS deprecated_nodes,
                 (SELECT COUNT(*) FROM nodes
-                   WHERE created_at > now() - interval '24 hours') AS nodes_24h,
+                   WHERE merged_into IS NULL
+                     AND created_at > now() - interval '24 hours') AS nodes_24h,
                 (SELECT COUNT(*) FROM edges WHERE NOT deprecated) AS live_edges,
                 (SELECT COUNT(*) FROM edges WHERE deprecated) AS deprecated_edges,
                 (SELECT COUNT(*) FROM edges

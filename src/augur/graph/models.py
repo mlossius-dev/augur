@@ -220,6 +220,22 @@ class AddDisconfirmingSignalOperation(BaseModel):
     signal_id: str
 
 
+class MergeNodesOperation(BaseModel):
+    """
+    Merge a duplicate node into another (docs/augur-graph-schema.md,
+    "Merging duplicate nodes").  Operator-only: deliberately not part of
+    ProposedAnchorOperation, so no LLM output can ever parse into one.
+    """
+
+    operation: Literal["merge_nodes"] = "merge_nodes"
+    survivor_id: str
+    absorbed_id: str
+    reasoning: str
+    # Different node types merge only with this set, and only when the
+    # absorbed node has no type-specific history
+    allow_type_change: bool = False
+
+
 # Discriminated union of all anchor operations
 ProposedAnchorOperation = Annotated[
     Union[

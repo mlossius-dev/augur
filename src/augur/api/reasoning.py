@@ -17,6 +17,8 @@ import structlog
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
+from augur.graph.reader import resolve_merged
+
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/reasoning", tags=["reasoning"])
 
@@ -54,6 +56,8 @@ async def reasoning_node(
     cutoff = ts or datetime.utcnow()
 
     async with pool.acquire() as conn:
+        # A merged-away node's page shows its survivor
+        node_id = await resolve_merged(conn, node_id)
         node_row = await conn.fetchrow(
             """
             SELECT node_id, node_type, name, description, type_data,

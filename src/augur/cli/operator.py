@@ -1865,6 +1865,102 @@ topics_app = typer.Typer(
 app.add_typer(topics_app, name="topics")
 
 
+# ── augur graph merge ──────────────────────────────────────────────────────────
+
+graph_app = typer.Typer(
+    help="Graph corrections by the operator (docs/augur-graph-schema.md, "
+         "'Merging duplicate nodes').",
+    no_args_is_help=True,
+)
+app.add_typer(graph_app, name="graph")
+
+
+@graph_app.command("merge")
+def graph_merge(
+    keep: Annotated[str, typer.Option("--keep", help="Survivor node UUID")],
+    absorb: Annotated[str, typer.Option("--absorb", help="Node UUID to merge into it")],
+    reason: Annotated[str, typer.Option("--reason", help="Why these are one thing")],
+    allow_type_change: Annotated[
+        bool, typer.Option("--allow-type-change", help="Allow different node types")
+    ] = False,
+) -> None:
+    """Merge one duplicate node into another."""
+    _run(_graph_merge_async([(keep, absorb)], reason, allow_type_change))
+
+
+async def _graph_merge_async(
+    pairs: list[tuple[str, str]], reason: str, allow_type_change: bool
+) -> None:
+    from augur.graph.applier import Applier
+    from augur.graph.models import MergeNodesOperation
+
+    pool, close_db = await _get_pool()
+    try:
+        applier = Applier(pool)
+        merged = rejected = 0
+        for keep, absorb in pairs:
+            event = await applier.merge_nodes(MergeNodesOperation(
+                survivor_id=keep, absorbed_id=absorb, reasoning=reason,
+                allow_type_change=allow_type_change))
+            if event.rejected:
+                rejected += 1
+                typer.secho(f"  rejected {absorb} -> {keep}: {event.rejection_reason}",
+                            fg=typer.colors.RED)
+            else:
+                merged += 1
+        typer.echo(f"Merged {merged}, rejected {rejected}.")
+    finally:
+        await close_db()
+
+
+@graph_app.command("merge-same-name")
+def graph_merge_same_name(
+    yes: Annotated[bool, typer.Option("--yes", help="Apply; without it, only list")] = False,
+) -> None:
+    """
+    Merge every group of live nodes with exactly the same name and type.
+
+    The survivor is the node with the most live edges, then the oldest.
+    Without --yes this only lists what would be merged.
+    """
+    _run(_graph_merge_same_name_async(yes))
+
+
+async def _graph_merge_same_name_async(yes: bool) -> None:
+    pool, close_db = await _get_pool()
+    try:
+        groups = await pool.fetch(
+            """
+            WITH live AS (
+                SELECT n.node_id, n.name, n.node_type, n.created_at,
+                       (SELECT count(*) FROM edges e WHERE NOT e.deprecated
+                          AND (e.source_node_id = n.node_id OR e.target_node_id = n.node_id)) AS degree
+                FROM nodes n WHERE n.merged_into IS NULL
+            )
+            SELECT lower(name) AS key, node_type,
+                   array_agg(node_id ORDER BY degree DESC, created_at ASC) AS ids,
+                   array_agg(name ORDER BY degree DESC, created_at ASC) AS names,
+                   array_agg(degree ORDER BY degree DESC, created_at ASC) AS degrees
+            FROM live GROUP BY lower(name), node_type HAVING count(*) > 1
+            ORDER BY count(*) DESC, lower(name)
+            """
+        )
+    finally:
+        await close_db()
+
+    pairs = [(str(g["ids"][0]), str(a)) for g in groups for a in g["ids"][1:]]
+    typer.secho(f"\n{len(groups)} same-name groups, {len(pairs)} merges", bold=True)
+    for g in groups[:40]:
+        typer.echo(f"  {g['node_type']:<9} {g['names'][0][:60]:<60} "
+                   f"keep {g['degrees'][0]} edges, absorb {len(g['ids']) - 1}")
+    if len(groups) > 40:
+        typer.echo(f"  ... and {len(groups) - 40} more")
+    if not yes:
+        typer.echo("\nDry run. Re-run with --yes to merge.")
+        return
+    await _graph_merge_async(pairs, "same name and type (operator batch)", False)
+
+
 # ── augur backfill ─────────────────────────────────────────────────────────────
 
 backfill_app = typer.Typer(
