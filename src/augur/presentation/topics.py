@@ -66,13 +66,17 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
                    COUNT(tn.node_id) AS node_count,
                    COUNT(CASE WHEN n.type_data->>'current_state' = 'active' THEN 1 END)
                        AS active_count,
-                   COUNT(CASE WHEN n.node_type = 'condition' THEN 1 END) AS condition_count
+                   COUNT(CASE WHEN n.node_type = 'condition' THEN 1 END) AS condition_count,
+                   MAX(b.graph_active) AS graph_active,
+                   MAX(b.graph_conditions) AS graph_conditions
             FROM topics t
             LEFT JOIN topic_nodes tn ON tn.topic_id = t.topic_id
             LEFT JOIN nodes n ON n.node_id = tn.node_id
+            CROSS JOIN (""" + _BASELINE_SQL + """) b
             WHERE NOT t.hidden
             GROUP BY t.topic_id
-            ORDER BY t.name
+            -- Largest first; the home page orders by the last 24 hours' changes
+            ORDER BY COUNT(tn.node_id) DESC, t.name
             """
         )
 
@@ -99,11 +103,11 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
             dimension=row["dimension"],
             node_count=row["node_count"],
             active_condition_count=row["active_count"],
-            # Active share of the topic's conditions, not of all its nodes
-            state=_derive_topic_state(row["active_count"], row["condition_count"]),
+            # Active share of the topic's conditions against the whole graph's
+            state=_derive_topic_state(row["active_count"], row["condition_count"], _baseline(row)),
             created_at=row["created_at"].isoformat(),
             updated_at=row["updated_at"].isoformat(),
-            attention=_derive_attention(row["active_count"], row["condition_count"]),
+            attention=_derive_attention(row["active_count"], row["condition_count"], _baseline(row)),
             edge_count=edge_counts.get(str(row["topic_id"]), 0),
         )
         for row in rows
@@ -121,7 +125,8 @@ async def get_topic_detail(
 
     async with pool.acquire() as conn:
         topic_row = await conn.fetchrow(
-            "SELECT * FROM topics WHERE topic_id = $1",
+            "SELECT t.*, b.graph_active, b.graph_conditions FROM topics t "
+            f"CROSS JOIN ({_BASELINE_SQL}) b WHERE t.topic_id = $1",
             topic_id,
         )
         if not topic_row:
@@ -181,10 +186,10 @@ async def get_topic_detail(
         dimension=topic_row["dimension"],
         node_count=total,
         active_condition_count=active,
-        state=_derive_topic_state(active, conditions),
+        state=_derive_topic_state(active, conditions, _baseline(topic_row)),
         created_at=topic_row["created_at"].isoformat(),
         updated_at=topic_row["updated_at"].isoformat(),
-        attention=_derive_attention(active, conditions),
+        attention=_derive_attention(active, conditions, _baseline(topic_row)),
         edge_count=edge_count,
         nodes=node_summaries,
     )
@@ -276,9 +281,47 @@ async def list_topics_for_node(pool: asyncpg.Pool, node_id: str) -> list[dict[st
     return [dict(r) for r in rows]
 
 
-def _derive_topic_state(active: int, total: int) -> str:
-    band = _compute_state_band(active, total)
-    return str(band)
+# Conditions are created active and rarely deactivate, so most of the graph's
+# conditions are active and a fixed share threshold calls every topic a crisis.
+# A topic's band is how far its active share sits above or below the whole
+# graph's, its share shrunk toward the graph's by TOPIC_BAND_PRIOR conditions
+# so a topic with three conditions does not swing to an extreme
+# (docs/augur-frontend-implementation.md, derived metrics; operator decision, October 2026).
+TOPIC_BAND_PRIOR = 5
+TOPIC_BAND_CUTS = ((-0.5, "improving"), (-0.15, "stable"), (0.15, "strained"), (0.5, "deteriorating"))
+
+_BASELINE_SQL = """
+    SELECT COUNT(*) FILTER (WHERE type_data->>'current_state' = 'active') AS graph_active,
+           COUNT(*) AS graph_conditions
+    FROM nodes WHERE node_type = 'condition' AND merged_into IS NULL
+"""
+
+
+def _baseline(row: Any) -> tuple[int, int] | None:
+    """The graph's (active, conditions) from a row, when the query carried them."""
+    try:
+        active, total = row.get("graph_active"), row.get("graph_conditions")
+    except AttributeError:
+        return None
+    return (int(active), int(total)) if active is not None and total else None
+
+
+def _derive_topic_state(active: int, total: int, baseline: tuple[int, int] | None = None) -> str:
+    """`total` is the topic's conditions; without a graph baseline, the fixed bands."""
+    if total == 0:
+        return "unknown"
+    if baseline is None or not baseline[1]:
+        return str(_compute_state_band(active, total))
+    g_active, g_total = baseline
+    base = g_active / g_total
+    if base in (0.0, 1.0):
+        return str(_compute_state_band(active, total))
+    share = (active + base * TOPIC_BAND_PRIOR) / (total + TOPIC_BAND_PRIOR)
+    lean = (share - base) / (1 - base) if share >= base else (share - base) / base
+    for cut, band in TOPIC_BAND_CUTS:
+        if lean < cut:
+            return band
+    return "crisis"
 
 
 # Attention is a severity-first priority proxy over the same state band the
@@ -293,6 +336,6 @@ _ATTENTION_BY_BAND = {
 }
 
 
-def _derive_attention(active: int, total: int) -> str:
+def _derive_attention(active: int, total: int, baseline: tuple[int, int] | None = None) -> str:
     """Map the topic's state band to a high/medium/low attention tier."""
-    return _ATTENTION_BY_BAND.get(_derive_topic_state(active, total), "low")
+    return _ATTENTION_BY_BAND.get(_derive_topic_state(active, total, baseline), "low")
