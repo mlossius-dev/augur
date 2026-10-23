@@ -65,7 +65,8 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
                    t.created_at, t.updated_at,
                    COUNT(tn.node_id) AS node_count,
                    COUNT(CASE WHEN n.type_data->>'current_state' = 'active' THEN 1 END)
-                       AS active_count
+                       AS active_count,
+                   COUNT(CASE WHEN n.node_type = 'condition' THEN 1 END) AS condition_count
             FROM topics t
             LEFT JOIN topic_nodes tn ON tn.topic_id = t.topic_id
             LEFT JOIN nodes n ON n.node_id = tn.node_id
@@ -98,10 +99,11 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
             dimension=row["dimension"],
             node_count=row["node_count"],
             active_condition_count=row["active_count"],
-            state=_derive_topic_state(row["active_count"], row["node_count"]),
+            # Active share of the topic's conditions, not of all its nodes
+            state=_derive_topic_state(row["active_count"], row["condition_count"]),
             created_at=row["created_at"].isoformat(),
             updated_at=row["updated_at"].isoformat(),
-            attention=_derive_attention(row["active_count"], row["node_count"]),
+            attention=_derive_attention(row["active_count"], row["condition_count"]),
             edge_count=edge_counts.get(str(row["topic_id"]), 0),
         )
         for row in rows
@@ -169,6 +171,7 @@ async def get_topic_detail(
     ]
 
     total = len(node_summaries)
+    conditions = sum(1 for n in node_summaries if n.node_type == "condition")
     active = sum(1 for n in node_summaries if n.current_state == "active")
 
     return TopicDetail(
@@ -178,10 +181,10 @@ async def get_topic_detail(
         dimension=topic_row["dimension"],
         node_count=total,
         active_condition_count=active,
-        state=_derive_topic_state(active, total),
+        state=_derive_topic_state(active, conditions),
         created_at=topic_row["created_at"].isoformat(),
         updated_at=topic_row["updated_at"].isoformat(),
-        attention=_derive_attention(active, total),
+        attention=_derive_attention(active, conditions),
         edge_count=edge_count,
         nodes=node_summaries,
     )

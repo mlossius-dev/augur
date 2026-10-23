@@ -77,6 +77,7 @@ class TestGetTopicList:
             "created_at": now,
             "updated_at": now,
             "node_count": 5,
+            "condition_count": 3,
             "active_count": 2,
         }
         pool, _ = _make_pool([row])
@@ -98,7 +99,7 @@ class TestGetTopicList:
         row = {
             "topic_id": tid, "name": "T", "description": "", "dimension": None,
             "created_at": now, "updated_at": now,
-            "node_count": 10, "active_count": 3,  # 30% → stable
+            "node_count": 10, "condition_count": 10, "active_count": 3,  # 30% → stable
         }
         pool, _ = _make_pool([row])
         result = await get_topic_list(pool)
@@ -113,7 +114,7 @@ class TestGetTopicList:
         row = {
             "topic_id": tid, "name": "T", "description": "", "dimension": None,
             "created_at": now, "updated_at": now,
-            "node_count": 10, "active_count": 9,  # 90% → crisis
+            "node_count": 10, "condition_count": 10, "active_count": 9,  # 90% → crisis
         }
         pool, _ = _make_pool([row])
         result = await get_topic_list(pool)
@@ -128,7 +129,7 @@ class TestGetTopicList:
         row = {
             "topic_id": tid, "name": "T", "description": "", "dimension": None,
             "created_at": now, "updated_at": now,
-            "node_count": 0, "active_count": 0,
+            "node_count": 0, "condition_count": 0, "active_count": 0,
         }
         pool, _ = _make_pool([row])
         result = await get_topic_list(pool)
@@ -669,3 +670,19 @@ class TestRouterRegistration:
 
         paths = {r.path for r in router.routes}
         assert "/api/geo/scope" in paths
+
+
+@pytest.mark.asyncio
+async def test_topic_state_is_the_active_share_of_conditions_not_of_all_nodes():
+    """A clustered topic holds many entities and events; they do not dilute its state."""
+    from augur.presentation.topics import get_topic_list
+
+    now = datetime.now(timezone.utc)
+    row = {
+        "topic_id": uuid.uuid4(), "name": "Russia · Ukraine", "description": "", "dimension": None,
+        "created_at": now, "updated_at": now,
+        "node_count": 200, "condition_count": 10, "active_count": 9,
+    }
+    pool, _ = _make_pool([row])
+    [t] = await get_topic_list(pool)
+    assert t.state == "crisis" and t.attention == "high"
