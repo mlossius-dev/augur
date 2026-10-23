@@ -52,6 +52,12 @@ class ChangeRecord:
     sources: list[dict] = field(default_factory=list)
 
 
+# Market moves shown as changes (docs/augur-presentation.md, level 3): over
+# the structured sources' five trading days, by instrument class
+_MARKET_SOURCES = ["yahoo_finance", "fred"]
+_MARKET_MOVE_THRESHOLD = {"currency": 1.5, "bond_yield": 5.0, "commodity": 3.0, "equity_index": 3.0}
+_MARKET_MOVE_DEFAULT = 3.0
+
 # Impact weights for sorting
 _IMPACT = {
     "disconfirmation_weakened": 1,
@@ -60,6 +66,8 @@ _IMPACT = {
     "condition_activated": 4,
     "condition_deactivated": 5,
     "condition_tracked": 6,
+    "event_recorded": 6,
+    "market_move": 6,
     "edge_created": 6,
 }
 
@@ -78,6 +86,8 @@ async def get_recent_changes(
       1. edge_weight_history — strengthened/weakened edges
       2. condition_state_history — condition activations/deactivations
       3. edges (created_at) — newly created high-weight edges
+      4. new event nodes connected to an active condition
+      5. sharp market moves in the structured-data sources (data, not graph)
     """
     cutoff = as_of or datetime.now(timezone.utc)
     window_start = cutoff - timedelta(hours=hours)
@@ -144,7 +154,91 @@ async def get_recent_changes(
             cutoff,
         )
 
+        # 4. New events that connect to an active condition (docs/augur-presentation.md, level 3)
+        event_rows = await conn.fetch(
+            """
+            SELECT n.node_id, n.name, n.created_at, n.created_from AS triggered_by
+            FROM nodes n
+            WHERE n.node_type = 'event'
+              AND n.merged_into IS NULL
+              AND n.created_at BETWEEN $1 AND $2
+              AND EXISTS (
+                  SELECT 1 FROM edges e
+                  JOIN nodes c ON c.node_id IN (e.source_node_id, e.target_node_id)
+                  WHERE (e.source_node_id = n.node_id OR e.target_node_id = n.node_id)
+                    AND NOT e.deprecated
+                    AND c.node_type = 'condition'
+                    AND c.type_data->>'current_state' = 'active'
+              )
+            ORDER BY n.created_at DESC
+            LIMIT 40
+            """,
+            window_start,
+            cutoff,
+        )
+
+        # 5. Latest move per instrument observed in the window
+        market_rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (metadata->>'symbol')
+                   metadata->>'symbol' AS symbol, metadata->>'label' AS label,
+                   (metadata->>'pct_change')::float AS pct,
+                   metadata->>'latest_value' AS value,
+                   metadata->>'instrument_class' AS class,
+                   content_timestamp
+            FROM payloads
+            WHERE source_id = ANY($3)
+              AND NOT rejected
+              AND metadata->>'pct_change' IS NOT NULL
+              AND content_timestamp BETWEEN $1 AND $2
+            ORDER BY metadata->>'symbol', content_timestamp DESC
+            """,
+            window_start,
+            cutoff,
+            _MARKET_SOURCES,
+        )
+
     # Build change records
+    for row in market_rows:
+        threshold = _MARKET_MOVE_THRESHOLD.get(row["class"] or "", _MARKET_MOVE_DEFAULT)
+        if row["pct"] is None or abs(row["pct"]) < threshold:
+            continue
+        label = row["label"] or row["symbol"]
+        direction = "up" if row["pct"] > 0 else "down"
+        dim = _infer_dimension(f"{label} {row['class'] or ''} price market")
+        changes.append(ChangeRecord(
+            change_id=f"market-{row['symbol']}-{row['content_timestamp']:%Y%m%d}",
+            change_type="market_move",
+            summary=f"Market move: {label} {direction} {abs(row['pct']):.1f}% over 5 trading days.",
+            dimension=dim,
+            dimension_label=_dim_label(dim),
+            occurred_at=row["content_timestamp"].isoformat(),
+            target_id="",
+            target_type="market",
+            target_name=label,
+            weight_before=None,
+            weight_after=None,
+            impact_rank=_IMPACT["market_move"],
+        ))
+
+    for row in event_rows:
+        dim = _infer_dimension(row["name"])
+        changes.append(ChangeRecord(
+            change_id=f"event-{row['node_id']}",
+            change_type="event_recorded",
+            summary=f"New event: {row['name']}.",
+            dimension=dim,
+            dimension_label=_dim_label(dim),
+            occurred_at=row["created_at"].isoformat(),
+            target_id=str(row["node_id"]),
+            target_type="node",
+            target_name=row["name"],
+            weight_before=None,
+            weight_after=None,
+            impact_rank=_IMPACT["event_recorded"],
+            signal_ids=[str(x) for x in row.get("triggered_by") or []],
+        ))
+
     for row in weight_rows:
         change_type = (
             "disconfirmation_weakened" if row["change_type"] == "disconfirmation"

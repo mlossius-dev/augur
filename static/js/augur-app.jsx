@@ -395,6 +395,8 @@ function SourceLine({ src }) {
 // ── DomainLedger ──────────────────────────────────────────────────────────────
 
 function DomainLedger({ dim, changes, onClose, onOpen }) {
+  // Market moves are data, not graph mutations: nothing to open (docs/augur-presentation.md, level 3)
+  const canOpen = c => !!(onOpen && c.targetId && (c.targetType === "node" || c.targetType === "edge"));
   const st = STATES[dim.state] || STATES.Unknown;
   const dimChanges = changes.filter(c => c.dim === dim.key);
 
@@ -465,10 +467,10 @@ function DomainLedger({ dim, changes, onClose, onOpen }) {
           </div>
         ) : dimChanges.map((c, i) => (
           <div key={c.id||i}
-               onClick={() => onOpen && c.targetId && onOpen(c)}
-               title="Open the reasoning behind this change"
+               onClick={() => canOpen(c) && onOpen(c)}
+               title={canOpen(c) ? "Open the reasoning behind this change" : undefined}
                style={{ borderTop: i===0?`1px solid ${P.natt}`:`1px solid ${P.ruleSoft}`, padding:"8px 0",
-                        cursor: onOpen && c.targetId ? "pointer" : "default" }}>
+                        cursor: canOpen(c) ? "pointer" : "default" }}>
             <div style={{ display:"flex", justifyContent:"space-between",
                           fontFamily:mono, fontSize:9.5, color:P.ink3, marginBottom:3, letterSpacing:".04em" }}>
               <span>{fmtRelTime(c.occurredAt)}</span>
@@ -487,8 +489,9 @@ function DomainLedger({ dim, changes, onClose, onOpen }) {
               </div>
             )}
             <div style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginTop:3, letterSpacing:".04em" }}>
-              {c.downstream > 0 && `${c.downstream} edge${c.downstream===1?"":"s"} downstream · `}
-              open reasoning →
+              {c.downstream > 0 && `${c.downstream} edge${c.downstream===1?"":"s"} downstream`}
+              {c.downstream > 0 && canOpen(c) && " · "}
+              {canOpen(c) ? "open reasoning →" : c.type === "market_move" ? "market data · not a graph change" : ""}
             </div>
           </div>
         ))}
