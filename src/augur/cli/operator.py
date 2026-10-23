@@ -1918,7 +1918,8 @@ def graph_merge_same_name(
     yes: Annotated[bool, typer.Option("--yes", help="Apply; without it, only list")] = False,
 ) -> None:
     """
-    Merge every group of live nodes with exactly the same name and type.
+    Merge every group of live nodes with exactly the same name and type
+    (events: and the same occurrence date).
 
     The survivor is the node with the most live edges, then the oldest.
     Without --yes this only lists what would be merged.
@@ -1933,15 +1934,21 @@ async def _graph_merge_same_name_async(yes: bool) -> None:
             """
             WITH live AS (
                 SELECT n.node_id, n.name, n.node_type, n.created_at,
+                       n.type_data->>'occurred_at' AS occurred_on,
                        (SELECT count(*) FROM edges e WHERE NOT e.deprecated
                           AND (e.source_node_id = n.node_id OR e.target_node_id = n.node_id)) AS degree
                 FROM nodes n WHERE n.merged_into IS NULL
             )
+            -- Events also by occurrence date: same-named events on different
+            -- dates are usually different occurrences (left for review)
             SELECT lower(name) AS key, node_type,
                    array_agg(node_id ORDER BY degree DESC, created_at ASC) AS ids,
                    array_agg(name ORDER BY degree DESC, created_at ASC) AS names,
                    array_agg(degree ORDER BY degree DESC, created_at ASC) AS degrees
-            FROM live GROUP BY lower(name), node_type HAVING count(*) > 1
+            FROM live
+            GROUP BY lower(name), node_type,
+                     CASE WHEN node_type = 'event' THEN left(occurred_on, 10) END
+            HAVING count(*) > 1
             ORDER BY count(*) DESC, lower(name)
             """
         )
