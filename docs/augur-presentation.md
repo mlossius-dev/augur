@@ -48,7 +48,7 @@ Five dimensions, fixed for now:
 4. **Environmental stress** — the state of climate, weather extremes, ecological pressure, and natural-disaster activity.
 5. **Structural change** — the state of long-running shifts in technology, demographics, and institutional capacity.
 
-Each dimension has a current state (a band rather than a number — *stable*, *strained*, *deteriorating*, *crisis*, *improving*) and a directional indicator (improving / worsening / steady). The bands are derived from graph state — the activation of conditions in each dimension's subgraph, weighted by edge weights.
+Each dimension has a current state (a band rather than a number — *stable*, *strained*, *deteriorating*, *crisis*, *improving*) and a directional indicator (improving / worsening / steady). The bands are derived from graph state — the activation of conditions in each dimension's subgraph, weighted by edge weights. Since most conditions are active once recorded, a dimension's band says how far its share of active conditions leans above or below the whole graph's, not the share itself (operator decision, October 2026; method in `augur-frontend-implementation.md`, derived metrics).
 
 The five-dimension scheme is not the final word. Calibration may reveal that some dimensions should split or merge. But starting with five forces the system to commit to a digest of the world's state rather than dumping a graph at the user.
 

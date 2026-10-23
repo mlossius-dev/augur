@@ -18,7 +18,7 @@ import structlog
 
 from augur.presentation.dimensions import (
     DIMENSION_LABELS,
-    _compute_state_band,
+    relative_state_band,
 )
 
 log = structlog.get_logger(__name__)
@@ -281,15 +281,8 @@ async def list_topics_for_node(pool: asyncpg.Pool, node_id: str) -> list[dict[st
     return [dict(r) for r in rows]
 
 
-# Conditions are created active and rarely deactivate, so most of the graph's
-# conditions are active and a fixed share threshold calls every topic a crisis.
-# A topic's band is how far its active share sits above or below the whole
-# graph's, its share shrunk toward the graph's by TOPIC_BAND_PRIOR conditions
-# so a topic with three conditions does not swing to an extreme
-# (docs/augur-frontend-implementation.md, derived metrics; operator decision, October 2026).
-TOPIC_BAND_PRIOR = 5
-TOPIC_BAND_CUTS = ((-0.5, "improving"), (-0.15, "stable"), (0.15, "strained"), (0.5, "deteriorating"))
-
+# A topic's band leans against the whole graph's active share, as the
+# dimensions' do (dimensions.relative_state_band)
 _BASELINE_SQL = """
     SELECT COUNT(*) FILTER (WHERE type_data->>'current_state' = 'active') AS graph_active,
            COUNT(*) AS graph_conditions
@@ -308,20 +301,7 @@ def _baseline(row: Any) -> tuple[int, int] | None:
 
 def _derive_topic_state(active: int, total: int, baseline: tuple[int, int] | None = None) -> str:
     """`total` is the topic's conditions; without a graph baseline, the fixed bands."""
-    if total == 0:
-        return "unknown"
-    if baseline is None or not baseline[1]:
-        return str(_compute_state_band(active, total))
-    g_active, g_total = baseline
-    base = g_active / g_total
-    if base in (0.0, 1.0):
-        return str(_compute_state_band(active, total))
-    share = (active + base * TOPIC_BAND_PRIOR) / (total + TOPIC_BAND_PRIOR)
-    lean = (share - base) / (1 - base) if share >= base else (share - base) / base
-    for cut, band in TOPIC_BAND_CUTS:
-        if lean < cut:
-            return band
-    return "crisis"
+    return str(relative_state_band(active, total, baseline))
 
 
 # Attention is a severity-first priority proxy over the same state band the

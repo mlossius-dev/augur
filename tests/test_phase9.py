@@ -689,7 +689,7 @@ async def test_topic_state_is_the_active_share_of_conditions_not_of_all_nodes():
 
 
 class TestTopicBandAgainstTheGraph:
-    """Topic bands lean against the whole graph's active share (TOPIC_BAND_* in topics.py)."""
+    """Topic bands lean against the whole graph's active share (dimensions.relative_state_band)."""
 
     BASE = (566, 692)  # October 2026: 82 % of conditions active
 
