@@ -237,6 +237,7 @@ Extraction therefore reads the most widely reported stories first:
 
 - **A 24-hour queue.** Every accepted, unread live payload of the last 24 hours is a candidate, so a story is not lost for missing one hourly run.
 - **Breadth.** A payload's story is the set of distinctive words in its headline. Its breadth is the number of *other* sources whose payloads in the queue share enough of those words: the same development reported by twelve outlets outranks an item only one carries. Source weight breaks ties, then recency.
+- **Market data is not read.** Payloads from the structured market sources (`yahoo_finance`, `fred`) are price series, not reporting; the home page shows sharp moves in them directly (`augur-presentation.md`, level 3), and a lens reading them only produced events such as "USD/JPY 5-day decline of 1.09%" that duplicate those moves and take calls from news (operator decision, October 2026).
 - **One per story per run.** Once a payload is chosen, others sharing its story wait for a later run, so one development does not take a whole run's capacity.
 
 This is ranking only: no LLM call, no change to the call quota. Breadth measures how widely something is reported, not whether it is true or important in itself; corroboration and weight remain the graph's business.

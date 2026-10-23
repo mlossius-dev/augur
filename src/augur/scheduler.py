@@ -25,6 +25,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 log = structlog.get_logger(__name__)
 
+# Price series, shown as market moves rather than read by lenses
+# (docs/augur-signal-pipeline.md, "Which payloads are read")
+NOT_EXTRACTED_SOURCES = ("yahoo_finance", "fred")
+
 # ── Job implementations ───────────────────────────────────────────────────────
 
 
@@ -117,6 +121,8 @@ async def _extraction_job(app_state: Any) -> None:
               AND NOT p.rejected
               -- Backfilled payloads are extracted by the backfill, on its own model
               AND NOT (p.metadata ? 'backfill')
+              -- Market data is shown as market moves, not read by lenses
+              AND p.source_id <> ALL($1::text[])
               AND NOT EXISTS (
                 SELECT 1 FROM llm_calls c
                 WHERE c.stage = 'extraction'
@@ -124,6 +130,7 @@ async def _extraction_job(app_state: Any) -> None:
               )
             LIMIT 3000
             """,
+            list(NOT_EXTRACTED_SOURCES),
         )
 
         # Fetch high-weight edges for the inline disconfirmation lens
