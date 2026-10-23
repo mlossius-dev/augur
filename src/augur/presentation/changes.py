@@ -432,6 +432,7 @@ async def _attach_topic_membership(
                 """
                 SELECT tn.node_id::text AS nid, tn.topic_id::text AS tid
                 FROM topic_nodes tn
+                JOIN topics t ON t.topic_id = tn.topic_id AND NOT t.hidden
                 WHERE tn.node_id = ANY($1::uuid[])
                 """,
                 node_ids,

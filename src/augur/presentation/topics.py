@@ -1,9 +1,10 @@
 """
-Topic view: operator-curated named clusters of graph nodes.
+Topic view: named clusters of graph nodes.
 
 Topics are the bridge between the raw graph and human comprehension.
-An operator assigns nodes to a topic; this module aggregates them into
-a structured topic summary suitable for the presentation layer.
+They emerge from daily graph clustering (augur.presentation.clustering)
+and are curated by the operator; this module aggregates them into a
+structured topic summary suitable for the presentation layer.
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ async def get_topic_list(pool: asyncpg.Pool) -> list[TopicSummary]:
             FROM topics t
             LEFT JOIN topic_nodes tn ON tn.topic_id = t.topic_id
             LEFT JOIN nodes n ON n.node_id = tn.node_id
+            WHERE NOT t.hidden
             GROUP BY t.topic_id
             ORDER BY t.name
             """

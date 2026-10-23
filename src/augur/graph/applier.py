@@ -592,8 +592,8 @@ class Applier:
         ]
         await conn.execute(
             """
-            INSERT INTO topic_nodes (topic_id, node_id, notes)
-            SELECT topic_id, $1, notes FROM topic_nodes WHERE node_id = $2
+            INSERT INTO topic_nodes (topic_id, node_id, notes, added_by)
+            SELECT topic_id, $1, notes, added_by FROM topic_nodes WHERE node_id = $2
             ON CONFLICT DO NOTHING
             """,
             sid,
