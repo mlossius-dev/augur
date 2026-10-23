@@ -315,7 +315,7 @@ Alias resolution prevents most duplicates but not all. Live operation and the 20
 
 **Identity correction, not a world event.** A merge says "these were always one thing", so it applies retroactively: after it, every `as_of` view shows the survivor wherever either node appeared. Its event carries the processing time; it does not move any `content_timestamp`.
 
-**Operator-only, through the Applier.** A merge is the operation `merge_nodes` (survivor, absorbed, reasoning), applied by the Applier like any other mutation and recorded in `graph_update_events`. It is not part of the `proposed_anchors` schema: anchoring and other LLM stages cannot propose one. The operator issues it from the CLI, one pair at a time or as a reviewed batch of exact same-name, same-type pairs.
+**Operator-only, through the Applier.** A merge is the operation `merge_nodes` (survivor, absorbed, reasoning), applied by the Applier like any other mutation and recorded in `graph_update_events`. It is not part of the `proposed_anchors` schema: anchoring and other LLM stages cannot propose one. The operator issues it from the CLI, one pair at a time or as a reviewed batch of exact same-name, same-type pairs. For `Event` nodes the batch also requires the same occurrence date: an event is one occurrence ("Identity rule" under `Event`), so two same-named events on different dates are usually two occurrences and are left for review one pair at a time.
 
 **What the Applier does, in one transaction:**
 
