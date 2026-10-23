@@ -229,6 +229,20 @@ Lenses run **in parallel** for each payload. Lens A reading a payload does not s
 
 After all lenses run, their signals are merged into a single batch for Tier A storage.
 
+### Which payloads are read (operator decision, October 2026)
+
+On the free tier, extraction reads a few payloads an hour out of hundreds ingested (`augur-architecture.md`, model selection), so which few it reads decides what reaches the graph. Reading the newest ones dropped widely reported stories by chance: over three days in October 2026, 7 of 188 articles on an oil-price move were read, 1 of 46 on US aid to Ukraine, none of 13 on riots in France.
+
+Extraction therefore reads the most widely reported stories first:
+
+- **A 24-hour queue.** Every accepted, unread live payload of the last 24 hours is a candidate, so a story is not lost for missing one hourly run.
+- **Breadth.** A payload's story is the set of distinctive words in its headline. Its breadth is the number of *other* sources whose payloads in the queue share enough of those words: the same development reported by twelve outlets outranks an item only one carries. Source weight breaks ties, then recency.
+- **One per story per run.** Once a payload is chosen, others sharing its story wait for a later run, so one development does not take a whole run's capacity.
+
+This is ranking only: no LLM call, no change to the call quota. Breadth measures how widely something is reported, not whether it is true or important in itself; corroboration and weight remain the graph's business.
+
+**Revisit trigger:** if widely reported but low-value stories (celebrity, sport) crowd out structural ones, weight breadth by the lenses' domains or by source tier.
+
 ### What lenses do not do
 
 - They do not deduplicate against other lenses' output (Tier A handles cross-lens convergence).
