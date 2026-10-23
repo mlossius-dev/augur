@@ -249,7 +249,8 @@ async def compute_dimension_scores(
             if r["new_state"] == "active":
                 spark_by_dim[dim][week_key]["active"] += 1
 
-    # Aggregate per dimension
+    # Aggregate per dimension, each against the whole graph's active share
+    baseline = (sum(1 for r in condition_rows if r["current_state"] == "active"), len(condition_rows))
     scores: list[DimensionScore] = []
 
     for dim in DIMENSIONS:
@@ -268,7 +269,7 @@ async def compute_dimension_scores(
         strong = sum(node_strong_edges.get(nid, 0) for nid in dim_nodes)
         weak = sum(node_weak_edges.get(nid, 0) for nid in dim_nodes)
 
-        state = _compute_state_band(active, total)
+        state = relative_state_band(active, total, baseline)
         direction = _compute_direction(dim_nodes, recent_node_states, prior_node_states)
 
         # Build sparkline
@@ -364,8 +365,43 @@ def _compute_velocity(sparkline: list[SparkPoint]) -> tuple[float, str, float, s
     return round(rate, 4), rate_label, round(accel, 4), accel_label
 
 
+# Conditions are created active and rarely deactivate, so most of the graph's
+# conditions are active and a fixed share threshold calls everything a crisis.
+# A dimension's or topic's band is how far its active share of conditions
+# leans above or below the whole graph's, its share shrunk toward the graph's
+# by STATE_BAND_PRIOR conditions so a small set does not swing to an extreme
+# (docs/augur-frontend-implementation.md, derived metrics; operator decision, October 2026).
+STATE_BAND_PRIOR = 5
+STATE_BAND_CUTS = (
+    (-0.5, StateBand.IMPROVING),
+    (-0.15, StateBand.STABLE),
+    (0.15, StateBand.STRAINED),
+    (0.5, StateBand.DETERIORATING),
+)
+
+
+def relative_state_band(active: int, total: int, baseline: tuple[int, int] | None) -> StateBand:
+    """Band of `active` of `total` conditions against the graph's (active, total).
+
+    Without a usable baseline (none, empty, or all/none active), the fixed bands.
+    """
+    if total == 0:
+        return StateBand.UNKNOWN
+    if baseline is None or not baseline[1]:
+        return _compute_state_band(active, total)
+    base = baseline[0] / baseline[1]
+    if base in (0.0, 1.0):
+        return _compute_state_band(active, total)
+    share = (active + base * STATE_BAND_PRIOR) / (total + STATE_BAND_PRIOR)
+    lean = (share - base) / (1 - base) if share >= base else (share - base) / base
+    for cut, band in STATE_BAND_CUTS:
+        if lean < cut:
+            return band
+    return StateBand.CRISIS
+
+
 def _compute_state_band(active: int, total: int) -> StateBand:
-    """Compute state band from active condition ratio."""
+    """Fixed bands on the active condition ratio (used without a graph baseline)."""
     if total == 0:
         return StateBand.UNKNOWN
     ratio = active / total

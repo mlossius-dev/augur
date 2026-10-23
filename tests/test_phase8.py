@@ -517,3 +517,38 @@ class TestGetRecentChanges:
         ))
         result = await get_recent_changes(pool, limit=3)
         assert len(result) <= 3
+
+
+class TestDimensionBandAgainstTheGraph:
+    """Dimension bands lean against the whole graph's active share (relative_state_band)."""
+
+    @staticmethod
+    def _cond(name: str, state: str) -> dict:
+        return {"node_id": uuid.uuid4(), "name": name, "description": "", "current_state": state}
+
+    @pytest.mark.asyncio
+    async def test_a_dimension_at_the_graph_share_is_strained_not_crisis(self):
+        # 8 of 10 active everywhere: the fixed bands would call both dimensions a crisis
+        rows = ([self._cond(f"Oil supply {i}", "active" if i < 8 else "inactive") for i in range(10)]
+                + [self._cond(f"Bank credit {i}", "active" if i < 8 else "inactive") for i in range(10)])
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(side_effect=[rows, [], [], []])
+        pool = AsyncMock()
+        pool.acquire = MagicMock(return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)))
+        scores = {s.dimension: s.state for s in await compute_dimension_scores(pool)}
+        assert scores["resource_availability"] == "strained"
+        assert scores["economic_stability"] == "strained"
+
+    @pytest.mark.asyncio
+    async def test_a_dimension_hotter_than_the_graph_is_worse(self):
+        rows = ([self._cond(f"Oil supply {i}", "active") for i in range(20)]
+                + [self._cond(f"Bank credit {i}", "active" if i < 10 else "inactive") for i in range(20)])
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(side_effect=[rows, [], [], []])
+        pool = AsyncMock()
+        pool.acquire = MagicMock(return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)))
+        scores = {s.dimension: s.state for s in await compute_dimension_scores(pool)}
+        assert scores["resource_availability"] == "crisis"
+        assert scores["economic_stability"] == "stable"
