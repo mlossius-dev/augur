@@ -25,6 +25,16 @@ from augur.graph.schema import EdgeType, NodeType, WeightBand
 log = structlog.get_logger(__name__)
 
 
+async def resolve_merged(conn: asyncpg.Connection, node_id: Any) -> Any:
+    """The node a merged-away node now lives in (docs/augur-graph-schema.md, merges)."""
+    for _ in range(10):
+        survivor = await conn.fetchval("SELECT merged_into FROM nodes WHERE node_id = $1", node_id)
+        if survivor is None:
+            return node_id
+        node_id = survivor
+    return node_id
+
+
 class GraphReader:
     """
     Read-only access to the Tier B graph state.
@@ -46,6 +56,7 @@ class GraphReader:
         returns None (the node did not exist at that time).
         """
         async with self._pool.acquire() as conn:
+            node_id = await resolve_merged(conn, node_id)
             if as_of is None:
                 row = await conn.fetchrow(
                     "SELECT * FROM nodes WHERE node_id = $1", node_id
@@ -72,13 +83,14 @@ class GraphReader:
         async with self._pool.acquire() as conn:
             if as_of is None:
                 rows = await conn.fetch(
-                    "SELECT * FROM nodes WHERE node_type = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                    "SELECT * FROM nodes WHERE node_type = $1 AND merged_into IS NULL "
+                    "ORDER BY created_at DESC LIMIT $2 OFFSET $3",
                     str(node_type), limit, offset,
                 )
             else:
                 rows = await conn.fetch(
                     "SELECT * FROM nodes WHERE node_type = $1 AND created_at <= $2 "
-                    "ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+                    "AND merged_into IS NULL ORDER BY created_at DESC LIMIT $3 OFFSET $4",
                     str(node_type), as_of, limit, offset,
                 )
         return [self._row_to_node(r) for r in rows]
@@ -98,7 +110,7 @@ class GraphReader:
         ordered by similarity descending.
         """
         params: list[Any] = [query, limit]
-        conditions = ["similarity(name, $1) > 0.1"]
+        conditions = ["similarity(name, $1) > 0.1", "merged_into IS NULL"]
 
         if node_type is not None:
             conditions.append(f"node_type = ${len(params) + 1}")

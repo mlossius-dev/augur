@@ -65,6 +65,7 @@ async def find_duplicate_candidates(
                        ) AS shared_neighbours
                 FROM nodes a
                 JOIN nodes b ON a.node_id < b.node_id AND a.name % b.name
+                    AND a.merged_into IS NULL AND b.merged_into IS NULL
                 LEFT JOIN degree da ON da.node_id = a.node_id
                 LEFT JOIN degree db ON db.node_id = b.node_id
                 ORDER BY same_name DESC, similarity DESC

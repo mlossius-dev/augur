@@ -56,6 +56,7 @@ async def retrieve_context(
                    ) AS score
             FROM nodes n
             WHERE n.created_at <= $2
+              AND n.merged_into IS NULL
               AND (
                   similarity(n.name, $1) > $3
                   OR similarity(coalesce(n.description, ''), $1) > $3
@@ -128,6 +129,7 @@ async def retrieve_context(
             FROM nodes n
             WHERE n.node_type = 'condition'
               AND n.created_at <= $1
+              AND n.merged_into IS NULL
             GROUP BY 1
             """,
             cutoff,

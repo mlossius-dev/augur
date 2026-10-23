@@ -152,6 +152,7 @@ async def compute_dimension_scores(
             FROM nodes n
             WHERE n.node_type = 'condition'
               AND n.created_at <= $1
+              AND n.merged_into IS NULL
             ORDER BY n.name
             """,
             cutoff,
