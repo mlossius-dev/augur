@@ -66,6 +66,31 @@ def cap_extraction_payloads(rows: list, calls_per_run: int, calls_per_payload: i
     return rows[: max(1, calls_per_run // calls_per_payload)]
 
 
+def _widest_stories_first(rows: list, calls_per_run: int, calls_per_payload: int) -> list:
+    """The run's payloads: widest-reported stories first, one per story."""
+    from augur.extraction.selection import Candidate, pick_for_run
+    from augur.ingestion.source_registry import load_sources
+
+    weights = {s.source_id: s.starting_source_weight for s in load_sources()}
+    n = len(cap_extraction_payloads(rows, calls_per_run, calls_per_payload))
+    by_id = {r["payload_id"]: r for r in rows}
+    picked = pick_for_run(
+        [
+            Candidate(
+                payload_id=r["payload_id"], source_id=r["source_id"], content=r["content"],
+                content_timestamp=r["content_timestamp"],
+                source_weight=weights.get(r["source_id"], 0.5),
+            )
+            for r in rows
+        ],
+        n,
+    )
+    log.info("scheduler.extraction_picked",
+             picks=[{"source": c.source_id, "breadth": c.breadth,
+                     "headline": c.content.splitlines()[0][:80]} for c in picked])
+    return [by_id[c.payload_id] for c in picked]
+
+
 async def _extraction_job(app_state: Any) -> None:
     """Hourly extraction: run all active lenses over recently ingested payloads."""
     from augur.config import get_settings
@@ -79,21 +104,25 @@ async def _extraction_job(app_state: Any) -> None:
     executor = LensExecutor(llm_client)
     tier_a = TierAStore(pool)
 
-    # Pull payloads ingested in the last 2 hours that have no signals yet
+    # The 24-hour queue: accepted live payloads no lens has read yet
+    # (docs/augur-signal-pipeline.md, "Which payloads are read").  "Read"
+    # means an extraction call was made, so a payload that yielded no signals
+    # is not read again every hour.
     async with pool.acquire() as conn:
         payload_rows = await conn.fetch(
             """
             SELECT p.payload_id, p.content, p.content_timestamp, p.source_id
             FROM payloads p
-            WHERE p.fetched_at > now() - interval '2 hours'
+            WHERE p.fetched_at > now() - interval '24 hours'
               AND NOT p.rejected
               -- Backfilled payloads are extracted by the backfill, on its own model
               AND NOT (p.metadata ? 'backfill')
               AND NOT EXISTS (
-                SELECT 1 FROM signals s WHERE s.payload_id = p.payload_id
+                SELECT 1 FROM llm_calls c
+                WHERE c.stage = 'extraction'
+                  AND c.metadata->>'payload_id' = p.payload_id::text
               )
-            ORDER BY p.content_timestamp DESC
-            LIMIT 200
+            LIMIT 3000
             """,
         )
 
@@ -124,7 +153,7 @@ async def _extraction_job(app_state: Any) -> None:
     edge_context = [dict(r) for r in disconf_edge_rows]
 
     calls_per_payload = len(ACTIVE_LENSES) + (1 if edge_context else 0)
-    capped = cap_extraction_payloads(
+    capped = _widest_stories_first(
         payload_rows, get_settings().extraction_calls_per_run, calls_per_payload
     )
     if len(capped) < len(payload_rows):
