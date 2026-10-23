@@ -686,3 +686,40 @@ async def test_topic_state_is_the_active_share_of_conditions_not_of_all_nodes():
     pool, _ = _make_pool([row])
     [t] = await get_topic_list(pool)
     assert t.state == "crisis" and t.attention == "high"
+
+
+class TestTopicBandAgainstTheGraph:
+    """Topic bands lean against the whole graph's active share (TOPIC_BAND_* in topics.py)."""
+
+    BASE = (566, 692)  # October 2026: 82 % of conditions active
+
+    def test_a_topic_at_the_graph_share_is_strained(self):
+        from augur.presentation.topics import _derive_topic_state
+        assert _derive_topic_state(35, 42, self.BASE) == "strained"
+
+    def test_a_topic_well_below_the_graph_is_stable_or_better(self):
+        from augur.presentation.topics import _derive_topic_state
+        assert _derive_topic_state(12, 19, self.BASE) == "stable"
+        assert _derive_topic_state(0, 20, self.BASE) == "improving"
+
+    def test_a_topic_fully_active_is_crisis_only_with_enough_conditions(self):
+        from augur.presentation.topics import _derive_topic_state
+        assert _derive_topic_state(13, 13, self.BASE) == "crisis"
+        assert _derive_topic_state(3, 3, self.BASE) == "deteriorating", "three conditions are thin evidence"
+
+    def test_without_a_baseline_the_fixed_bands_apply(self):
+        from augur.presentation.topics import _derive_topic_state
+        assert _derive_topic_state(9, 10) == "crisis"
+        assert _derive_topic_state(9, 10, (0, 0)) == "crisis"
+        assert _derive_topic_state(0, 0, self.BASE) == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_the_list_reads_the_baseline_from_its_rows(self):
+        from augur.presentation.topics import get_topic_list
+        now = datetime.now(timezone.utc)
+        row = {"topic_id": uuid.uuid4(), "name": "T", "description": "", "dimension": None,
+               "created_at": now, "updated_at": now, "node_count": 50, "condition_count": 42,
+               "active_count": 35, "graph_active": 566, "graph_conditions": 692}
+        pool, _ = _make_pool([row])
+        [t] = await get_topic_list(pool)
+        assert (t.state, t.attention) == ("strained", "medium")

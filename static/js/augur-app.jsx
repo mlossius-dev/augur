@@ -513,9 +513,13 @@ function CausalThreads({ topics, changes, onTopicClick }) {
     );
   }
 
+  // Most changes in the last 24 hours first, then the largest
+  const nChanges = t => changes.filter(c => (c.topicIds || []).includes(t.topic_id)).length;
+  const ordered = [...topics].sort((a, b) => (nChanges(b) - nChanges(a)) || (b.node_count - a.node_count));
+
   return (
     <div>
-      {topics.map((t, i) => {
+      {ordered.map((t, i) => {
         const isOpen = open === i;
         // Real membership: a change links to this topic when its target node
         // (or an edge endpoint) sits in the topic's subgraph.
