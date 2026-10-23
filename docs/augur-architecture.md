@@ -344,7 +344,7 @@ The views:
 | View | Contents | Time column for `as_of` |
 |---|---|---|
 | `aliases` | `alias_text`, `canonical_name`, `canonical_node_id` | `added_at` |
-| `topics` | `topic_id`, `name`, `description`, `dimension` | `created_at` |
+| `topics` | `topic_id`, `name`, `description`, `dimension` (hidden topics are left out) | `created_at` |
 | `topic_nodes` | `topic_id`, `node_id`, `node_type`, `node_name` | `added_at` |
 | `events` | event nodes: `node_id`, `name`, `occurred_at`, `event_kind`, `subject_entities`, `occurred_location` | `occurred_at` |
 | `condition_history` | condition state transitions with node name | `content_timestamp` |

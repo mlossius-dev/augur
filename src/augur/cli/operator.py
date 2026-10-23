@@ -2103,6 +2103,70 @@ async def _topics_list_async() -> None:
         await close_db()
 
 
+@topics_app.command("recluster")
+def topics_recluster(
+    yes: Annotated[bool, typer.Option("--yes", help="Apply; without it, only list")] = False,
+) -> None:
+    """
+    Run topic clustering now (it also runs daily): existing topics follow
+    their community, large unmatched communities become new topics
+    (docs/augur-presentation.md, "How topics emerge").
+    """
+    _run(_topics_recluster_async(yes))
+
+
+async def _topics_recluster_async(yes: bool) -> None:
+    from augur.presentation.clustering import recluster_topics
+
+    pool, close_db = await _get_pool()
+    try:
+        plans = await recluster_topics(pool, apply=yes)
+    finally:
+        await close_db()
+    typer.secho(f"\n{sum(p.action == 'create' for p in plans)} new, "
+                f"{sum(p.action == 'update' for p in plans)} updated", bold=True)
+    for p in plans:
+        flag = " (hidden)" if p.hidden else ""
+        typer.echo(f"  {p.action:<6} {p.name[:50]:<50} {len(p.members):4} nodes  {p.active:3} active  "
+                   f"+{len(p.added)} -{len(p.removed)}{flag}")
+    if not yes:
+        typer.echo("\nDry run. Re-run with --yes to apply.")
+
+
+@topics_app.command("rename")
+def topics_rename(
+    topic_id: Annotated[str, typer.Argument(help="Topic UUID")],
+    name: Annotated[str, typer.Argument(help="New name (unique)")],
+) -> None:
+    """Rename a topic; clustering keeps the name from then on."""
+    _run(_topics_set_async(topic_id, "name", name))
+
+
+@topics_app.command("hide")
+def topics_hide(
+    topic_id: Annotated[str, typer.Argument(help="Topic UUID")],
+    unhide: Annotated[bool, typer.Option("--unhide", help="Show it again")] = False,
+) -> None:
+    """Hide a topic from the home page, topic list and Discourse; clustering will not recreate it."""
+    _run(_topics_set_async(topic_id, "hidden", not unhide))
+
+
+async def _topics_set_async(topic_id: str, column: str, value: object) -> None:
+    assert column in ("name", "hidden")
+    pool, close_db = await _get_pool()
+    try:
+        status = await pool.execute(
+            f"UPDATE topics SET {column} = $2, updated_at = now() WHERE topic_id = $1::uuid",
+            topic_id, value,
+        )
+    finally:
+        await close_db()
+    if status.endswith(" 0"):
+        typer.secho(f"Topic {topic_id} not found.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.secho(f"Topic {topic_id}: {column} = {value}", fg=typer.colors.GREEN)
+
+
 @topics_app.command("assign")
 def topics_assign(
     topic_id: Annotated[str, typer.Option("--topic", "-t", help="Topic UUID")],

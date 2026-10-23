@@ -340,6 +340,21 @@ async def _duplicate_candidates_job(app_state: Any) -> None:
         log.error("scheduler.duplicate_candidates_failed", error=str(exc))
 
 
+async def _topic_clustering_job(app_state: Any) -> None:
+    """Daily: topics follow the graph's communities (docs/augur-presentation.md)."""
+    from augur.monitoring.health import log_job_complete, log_job_start
+    from augur.presentation.clustering import recluster_topics, report
+
+    pool = app_state.raw_pool
+    log_id = await log_job_start(pool, "topic_clustering")
+    try:
+        plans = await recluster_topics(pool, apply=True)
+        await log_job_complete(pool, log_id, n_processed=len(plans), metadata={"topics": report(plans)})
+    except Exception as exc:
+        await log_job_complete(pool, log_id, status="error", error_message=str(exc))
+        log.error("scheduler.topic_clustering_failed", error=str(exc))
+
+
 async def _prune_sessions_job(app_state: Any) -> None:
     """Weekly session pruning: remove stale conversation sessions."""
     from augur.conversation.session import prune_sessions
@@ -509,6 +524,18 @@ def create_scheduler(app_state: Any) -> AsyncIOScheduler:
         trigger=CronTrigger(day_of_week="sun", hour=5, minute=0, timezone="UTC"),
         id="duplicate_candidates",
         name="Duplicate-node candidates",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+
+    # Topic clustering: daily, 04:30 UTC
+    scheduler.add_job(
+        func=_topic_clustering_job,
+        args=[app_state],
+        trigger=CronTrigger(hour=4, minute=30, timezone="UTC"),
+        id="topic_clustering",
+        name="Topic clustering",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
