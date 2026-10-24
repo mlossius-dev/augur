@@ -58,7 +58,7 @@ def test_an_existing_topic_follows_the_community_holding_most_of_its_members() -
 def test_clustering_removes_only_its_own_members() -> None:
     g, nodes = _world()
     oil = TopicState("t-oil", "Oil supply", "operator", False,
-                     operator_members={"oil0", "war7"}, clustered_members={"oil3", "war8"})
+                     operator_members={"oil0", "oil1", "war7"}, clustered_members={"oil3", "war8"})
     [update] = [p for p in plan(g, nodes, [oil]) if p.topic_id == "t-oil"]
     assert update.removed == {"war8"}
     assert "war7" not in update.removed, "an operator member is never removed"
@@ -129,3 +129,15 @@ def test_a_dimension_needs_a_keyword_and_none_is_none() -> None:
     assert _dimension({"a"}, {"a": NodeInfo("Manchester City", "entity")}) is None
     assert _dimension({"a", "b"}, {"a": NodeInfo("Crude oil supply", "condition"),
                                    "b": NodeInfo("Diesel shortage", "condition")}) == "resource_availability"
+
+
+def test_a_small_topic_inside_a_large_community_does_not_take_it() -> None:
+    """The topic that already is most of the community keeps it (October 2026: a
+    10-node sanctions topic took the 234-node US–Iran community)."""
+    g, _ = _world()
+    comms = communities(g)
+    big = TopicState("big", "Oil", "clustered", False, clustered_members={f"oil{i}" for i in range(11)})
+    small = TopicState("small", "Oil sanctions", "clustered", False, clustered_members={"oil0", "oil1"})
+    out = match([small, big], comms)
+    assert comms[out["big"]] >= {"oil0", "oil1"}
+    assert "small" not in out or comms[out["small"]] != comms[out["big"]]
