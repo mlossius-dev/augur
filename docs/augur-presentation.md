@@ -180,6 +180,7 @@ How topics emerge (operator decision, October 2026):
 - **Daily clustering.** Once a day the live graph (nodes not merged away, edges not deprecated) is divided into communities by modularity (Louvain), each edge weighted by its band: strong 3, moderate 2, weak 1, provisional 0.5. The division is seeded, so an unchanged graph gives unchanged communities.
 - **Existing topics follow their community.** Each topic is matched to the community that holds the largest share of its members (at least 30 %), one community per topic. Its clustered members become that community's nodes, so the topic grows with the graph. Members the operator added by hand are never removed by clustering.
 - **New topics.** A community no topic matched becomes a new topic when it has at least 10 nodes and at least 2 active conditions. It is marked as clustered and named after its two most connected nodes until the operator renames it; its dimension is the one its conditions' names point to.
+- **Latest change.** Each topic on the home page shows its most recent change, however old; one from the last 24 hours is marked *New*. A topic is never shown as empty merely because the last day was quiet (operator decision, October 2026).
 - **Order and state.** The home page lists topics with the most changes in the last 24 hours first, then the largest. A topic's state band says how far its share of active conditions leans above or below the whole graph's (`augur-frontend-implementation.md`, derived metrics), since most conditions are active and an absolute share would call every topic a crisis.
 - **Operator curation.** The operator can rename a topic, hide it (a hidden topic is left out of the home page, the topic list and Discourse, and is not recreated by clustering), and add or remove members by hand. A topic is never deleted by clustering: one whose community dissolves keeps its members until the operator acts.
 
@@ -190,6 +191,7 @@ Topics are presentation, not graph: clustering writes no node or edge and makes 
 - The **time scrubber** (described in its own section below).
 - The **conversation entry point** (described in its own section below).
 - A small breadcrumb showing where in the zoom hierarchy you currently are.
+- The **masthead** (operator decision, October 2026): the name Augur over "A Vindingur Experiment", tying it to the Vindingur umbrella, and two links: **About the Causal Graph**, a prose page in plain business language on how the system works and what it is not, and **Discourse**, the sibling system's dashboard shown as a page of this interface (`augur-architecture.md`, "Sibling systems").
 
 ---
 

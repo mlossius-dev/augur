@@ -243,7 +243,7 @@ class TestWeightChangeSummary:
 class TestConditionSummary:
     def test_activated(self):
         result = _condition_summary("condition_activated", "High inflation")
-        assert "activated" in result.lower() or "High inflation" in result
+        assert result == "High inflation.", "the type label already says activated"
 
     def test_deactivated(self):
         result = _condition_summary("condition_deactivated", "Supply shortage")
