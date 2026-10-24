@@ -96,16 +96,22 @@ def hubs(g: nx.Graph, community: set[str], n: int = 5) -> list[str]:
 
 
 def match(topics: list[TopicState], comms: list[set[str]]) -> dict[str, int]:
-    """Topic → community index: largest share of the topic's members first, one-to-one."""
+    """Topic → community index, one-to-one, closest fit (Jaccard) first.
+
+    A community is a candidate for a topic when it holds MATCH_SHARE of the
+    topic's members. Among candidates the closest overall fit wins, so a small
+    topic lying wholly inside a large community does not take it from the
+    topic that already is most of it.
+    """
     pairs = []
     for t in topics:
         members = t.members
         if not members:
             continue
         for i, c in enumerate(comms):
-            share = len(members & c) / len(members)
-            if share >= MATCH_SHARE:
-                pairs.append((share, len(members & c), t.topic_id, i))
+            overlap = len(members & c)
+            if overlap / len(members) >= MATCH_SHARE:
+                pairs.append((overlap / len(members | c), overlap, t.topic_id, i))
     pairs.sort(key=lambda p: (-p[0], -p[1], p[2], p[3]))
     out: dict[str, int] = {}
     used: set[int] = set()
