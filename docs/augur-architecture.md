@@ -338,6 +338,7 @@ The relationship is a **one-way, read-only bridge**:
 - Core publishes a schema, `core_bridge`, that contains **views only** (migration `010_core_bridge.sql`). The views are a published contract: Discourse reads them, and only them.
 - The `discourse` role has `USAGE` on `core_bridge` and `SELECT` on its views. It has no grant on any other Core object. The views run with their owner's rights, so Discourse never needs, and never gets, access to the tables behind them.
 - **Core never reads Discourse.** Nothing Discourse produces enters the signal pipeline, Tier A, or the graph. The social-media exclusion in `augur-sources.md` is unchanged: Discourse's material is exactly the non-independent echo that Tier A's convergence detection must never see.
+- **One web interface, two systems** (operator decision, October 2026). Core's web interface shows Discourse's dashboard as one of its pages: the page frames Discourse's own dashboard, in its embed mode, from `DISCOURSE_URL`. The browser loads it from Discourse; Core's backend fetches nothing from Discourse, so the rule above holds. On the home server both sit behind the same reverse proxy; locally `DISCOURSE_URL` is `http://localhost:8100`.
 
 The views:
 

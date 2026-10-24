@@ -78,6 +78,7 @@ async def get_recent_changes(
     hours: int = 24,
     as_of: datetime | None = None,
     limit: int = 15,
+    rows_per_kind: int | None = None,
 ) -> list[ChangeRecord]:
     """
     Return the most impactful graph changes in the lookback window.
@@ -91,6 +92,10 @@ async def get_recent_changes(
     """
     cutoff = as_of or datetime.now(timezone.utc)
     window_start = cutoff - timedelta(hours=hours)
+    # Newest rows read per kind of change; a long window needs more than the
+    # 24-hour defaults or its older changes are cut off
+    cap = {k: int(rows_per_kind or n) for k, n in
+           (("weight", 50), ("state", 50), ("edge", 30), ("event", 40))}
 
     changes: list[ChangeRecord] = []
 
@@ -112,7 +117,7 @@ async def get_recent_changes(
                    OR ewh.previous_weight_band IN ('strong', 'moderate'))
               AND NOT e.deprecated
             ORDER BY ewh.content_timestamp DESC
-            LIMIT 50
+            LIMIT """ + str(cap["weight"]) + """
             """,
             window_start,
             cutoff,
@@ -129,7 +134,7 @@ async def get_recent_changes(
               AND csh.new_state IN ('active', 'inactive')
               AND (csh.previous_state IS NULL OR csh.previous_state != csh.new_state)
             ORDER BY csh.content_timestamp DESC
-            LIMIT 50
+            LIMIT """ + str(cap["state"]) + """
             """,
             window_start,
             cutoff,
@@ -148,7 +153,7 @@ async def get_recent_changes(
               AND e.current_weight_band IN ('strong', 'moderate')
               AND NOT e.deprecated
             ORDER BY e.created_at DESC
-            LIMIT 30
+            LIMIT """ + str(cap["edge"]) + """
             """,
             window_start,
             cutoff,
@@ -171,7 +176,7 @@ async def get_recent_changes(
                     AND c.type_data->>'current_state' = 'active'
               )
             ORDER BY n.created_at DESC
-            LIMIT 40
+            LIMIT """ + str(cap["event"]) + """
             """,
             window_start,
             cutoff,
@@ -502,7 +507,8 @@ def _weight_change_summary(change_type: str, edge_name: str, new_band: str) -> s
 
 def _condition_summary(change_type: str, name: str) -> str:
     if change_type == "condition_activated":
-        return f"Condition activated: {name}."
+        # The change type is shown beside the summary; the name says enough
+        return f"{name}."
     if change_type == "condition_tracked":
         return f"New condition tracked, not active: {name}."
     return f"Condition deactivated: {name}."

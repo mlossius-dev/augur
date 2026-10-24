@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     # ── SearXNG ───────────────────────────────────────────────────────────────
     searxng_url: str = "http://searxng:8080"
+    # Where the browser finds Augur Discourse's dashboard, shown as a page of
+    # Core's interface (docs/augur-architecture.md, "Sibling systems")
+    discourse_url: str = "http://localhost:8100"
 
     # ── Object storage (off-host backups) ────────────────────────────────────
     object_storage_endpoint: str = ""

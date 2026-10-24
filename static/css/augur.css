@@ -1187,3 +1187,7 @@ a:hover { text-decoration: underline; }
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: none; }
 }
+
+/* Masthead links: About the Causal Graph, Discourse */
+.ag-mast-link { cursor: pointer; }
+.ag-mast-link:hover { text-decoration: underline; color: inherit; }

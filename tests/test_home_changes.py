@@ -102,3 +102,29 @@ async def test_event_query_requires_an_active_condition_and_skips_merged_nodes()
     assert "merged_into IS NULL" in q
     assert "current_state' = 'active'" in q
     assert "NOT e.deprecated" in q
+
+
+@pytest.mark.asyncio
+async def test_a_long_window_reads_more_rows_per_kind_than_the_daily_view() -> None:
+    """Each topic's latest change looks back 30 days; the 24-hour caps would cut it off."""
+    seen: list[str] = []
+
+    async def fetch(query, *args):
+        seen.append(query)
+        return []
+
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(side_effect=fetch)
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=AsyncMock(
+        __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)))
+    with patch("augur.presentation.changes._attach_downstream_counts", AsyncMock()), \
+         patch("augur.presentation.changes._attach_topic_membership", AsyncMock()), \
+         patch("augur.presentation.changes._attach_sources", AsyncMock()):
+        await get_recent_changes(pool, as_of=NOW)
+        daily = [q for q in seen if "LIMIT" in q]
+        seen.clear()
+        await get_recent_changes(pool, as_of=NOW, hours=720, rows_per_kind=3000)
+        monthly = [q for q in seen if "LIMIT 3000" in q]
+    assert any("LIMIT 50" in q for q in daily)
+    assert len(monthly) == 4, "all four kinds of change"

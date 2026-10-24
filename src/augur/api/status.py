@@ -51,7 +51,11 @@ async def system_status(request: Request) -> JSONResponse:
     health = await get_pipeline_health(pool)
     flow = await get_signal_flow(pool, hours=1)
 
+    from augur.config import get_settings
+
     return JSONResponse({
+        # Pages the header links to; the browser loads Discourse itself
+        "links": {"discourse": get_settings().discourse_url},
         "payloads": {
             "last_4h": health["payloads_24h"]["last_4h"],
             "last_24h": health["payloads_24h"]["total"],

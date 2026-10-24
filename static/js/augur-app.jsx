@@ -502,7 +502,7 @@ function DomainLedger({ dim, changes, onClose, onOpen }) {
 
 // ── CausalThreads ─────────────────────────────────────────────────────────────
 
-function CausalThreads({ topics, changes, onTopicClick }) {
+function CausalThreads({ topics, changes, topicLatest, onTopicClick }) {
   const [open, setOpen] = useState(null);
 
   if (!topics || topics.length === 0) {
@@ -524,7 +524,10 @@ function CausalThreads({ topics, changes, onTopicClick }) {
         // Real membership: a change links to this topic when its target node
         // (or an edge endpoint) sits in the topic's subgraph.
         const linked = changes.filter(c => (c.topicIds || []).includes(t.topic_id));
-        const latest = linked[0];
+        // Newest of the last 24 hours; else the topic's latest change, however old
+        const newest = [...linked].sort((a, b) => (b.occurredAt || "").localeCompare(a.occurredAt || ""))[0];
+        const latest = newest || (topicLatest && topicLatest[t.topic_id]);
+        const isNew = !!newest;
 
         return (
           <div key={t.topic_id||i} className="ag-thread"
@@ -548,11 +551,17 @@ function CausalThreads({ topics, changes, onTopicClick }) {
               <div style={{ fontFamily:serif, fontSize:13, lineHeight:1.4, color: latest ? P.ink2 : P.ink4 }}>
                 {latest ? (
                   <span>
-                    <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".1em", color:P.leirstein, marginRight:8 }}>24H</span>
+                    {isNew ? (
+                      <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".1em", color:P.leirstein, marginRight:8 }}>NEW:</span>
+                    ) : (
+                      <span style={{ fontFamily:mono, fontSize:9, letterSpacing:".06em", color:P.ink4, marginRight:8 }}>
+                        {fmtRelTime(latest.occurredAt)}
+                      </span>
+                    )}
                     {latest.summary}
                   </span>
                 ) : (
-                  <span style={{ fontStyle:"italic" }}>No new changes this window.</span>
+                  <span style={{ fontStyle:"italic" }}>No changes recorded in the last 30 days.</span>
                 )}
               </div>
               <div title={`${t.node_count} nodes · ${t.edge_count} edges`}
@@ -678,7 +687,7 @@ function YourLatitude({ geoData, onRequest }) {
 
 // ── LiveHeader ────────────────────────────────────────────────────────────────
 
-function LiveHeader({ statusData }) {
+function LiveHeader({ statusData, navigate }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -715,7 +724,7 @@ function LiveHeader({ statusData }) {
         <div style={{ textAlign:"center" }}>
           <div style={{ fontFamily:display, fontSize:30, color:P.natt }}>Augur</div>
           <div style={{ fontFamily:mono, fontSize:9, letterSpacing:".34em", color:P.ink3, marginTop:2 }}>
-            HERBARIUM MUNDI
+            A VINDINGUR EXPERIMENT
           </div>
         </div>
         <div style={{ textAlign:"right" }}>
@@ -725,7 +734,13 @@ function LiveHeader({ statusData }) {
             <span style={{ color:P.ink3, fontSize:9, letterSpacing:".16em", marginRight:6 }}>UTC</span>{utcT}
           </div>
           <div style={{ fontFamily:mono, fontSize:9, letterSpacing:".1em", color:P.ink4, marginTop:4 }}>
-            CAUSAL GRAPH INTELLIGENCE
+            <span className="ag-mast-link" onClick={() => navigate && navigate("about")}>
+              ABOUT THE CAUSAL GRAPH
+            </span>
+            <span style={{ margin:"0 8px" }}>·</span>
+            <span className="ag-mast-link" onClick={() => navigate && navigate("discourse")}>
+              DISCOURSE
+            </span>
           </div>
         </div>
       </div>
@@ -1424,9 +1439,105 @@ function DomainSection({ dims, changes, homeError, navigate }) {
   );
 }
 
+// ── About the Causal Graph ────────────────────────────────────────────────────
+// Prose for the reader on how the system works (docs/augur-presentation.md, masthead)
+
+const ABOUT_SECTIONS = [
+  ["What Augur is",
+   "Augur is a decision-support tool that keeps a running, structured picture of what is happening in the world and why it matters. " +
+   "It reads a broad set of news and data sources every hour, extracts the claims they make, and maintains those claims as a causal graph: " +
+   "conditions, events, actors and quantities, connected by explicit cause-and-effect relationships. " +
+   "Augur does not forecast. Its value is in making the present legible: what is driving what, how confident the evidence is, and what has changed."],
+  ["Where the signal comes from",
+   "Around three dozen curated sources feed the system: international wires and broadcasters, European and Nordic national press, " +
+   "outlets from India, China, Russia, the Gulf and Asia, and structured data such as market prices, central bank series, seismic feeds and sanctions lists. " +
+   "Sources are grouped by perspective, because agreement between independent perspectives is stronger evidence than the same story repeated within one. " +
+   "The registry is curated by the operator; social media is deliberately excluded."],
+  ["From articles to claims",
+   "Not every article is read. Each hour Augur prioritises the stories carried by the most independent sources, one article per story, " +
+   "so the most widely reported developments are processed first. Language models read each selected article through a set of analytical lenses " +
+   "(commodities, geopolitics, finance, regulation and others) and extract structured claims, each tied to its source and to the time the content describes. " +
+   "Claims that several sources make independently are recognised as converging evidence."],
+  ["The causal graph",
+   "Claims are proposed for the graph, never written to it directly. A deterministic gatekeeper, plain code rather than a model, validates every proposal: " +
+   "it must fit the schema, name what it connects, and state what evidence would prove it wrong. " +
+   "Each relationship carries a weight band, from provisional to strong, that moves only as evidence accumulates or erodes. " +
+   "Every change is recorded with its sources, so any statement on screen can be traced back to the articles behind it."],
+  ["Challenging its own beliefs",
+   "A system that only collects confirming evidence drifts. Augur therefore runs a regular disconfirmation pass that looks for evidence against its strongest relationships " +
+   "and weakens those that no longer hold. Duplicate entries are identified for review and merged, and conditions move between active and inactive as the evidence changes."],
+  ["Reading the home page",
+   "The five domains (economic stability, geopolitical tension, resource availability, environmental stress and structural change) summarise the graph's conditions. " +
+   "Their state says how a domain compares with the graph as a whole; the arrow says whether it is getting better or worse over recent weeks. " +
+   "The change log lists what moved in the last 24 hours, with links to the sources. " +
+   "Topics are clusters that emerge from the graph's own structure and are curated by the operator; each shows its latest development. " +
+   "The time scrubber replays the picture as it stood on any earlier date, and Ask Augur answers questions from the graph's contents."],
+  ["What Augur is not",
+   "Augur is not a prediction engine, a trading signal or a source of truth. Its picture is only as complete as its sources, and its models make mistakes; " +
+   "the design makes those mistakes visible and correctable rather than hiding them. Treat it as a well-organised briefing that shows its working, " +
+   "and as a starting point for your own judgement."],
+];
+
+function AboutView({ onBack, onDiscourse }) {
+  return (
+    <div className="ag-page" style={{ maxWidth:760 }}>
+      <div className="ag-back-link" onClick={onBack}>← Home</div>
+      <div className="ag-page-label">ABOUT THE CAUSAL GRAPH</div>
+      <h1 style={{ fontFamily:display, fontWeight:400, fontSize:34, color:P.natt, margin:"6px 0 18px", lineHeight:1.15 }}>
+        How Augur turns the news into a picture you can reason with
+      </h1>
+      {ABOUT_SECTIONS.map(([title, text]) => (
+        <section key={title} style={{ borderTop:`1px solid ${P.ruleSoft}`, padding:"14px 0" }}>
+          <h2 style={{ fontFamily:mono, fontWeight:400, fontSize:10.5, letterSpacing:".16em", color:P.ink3, margin:"0 0 6px" }}>
+            {title.toUpperCase()}
+          </h2>
+          <p style={{ fontFamily:serif, fontSize:15.5, lineHeight:1.6, color:P.ink2, margin:0 }}>{text}</p>
+        </section>
+      ))}
+      <section style={{ borderTop:`1px solid ${P.ruleSoft}`, padding:"14px 0" }}>
+        <h2 style={{ fontFamily:mono, fontWeight:400, fontSize:10.5, letterSpacing:".16em", color:P.ink3, margin:"0 0 6px" }}>
+          ITS SIBLING: DISCOURSE
+        </h2>
+        <p style={{ fontFamily:serif, fontSize:15.5, lineHeight:1.6, color:P.ink2, margin:0 }}>
+          Augur Discourse measures what is being talked about across public platforms and sets it against what the causal graph models as happening.
+          It is a separate system with its own data: Discourse reads the graph, but nothing Discourse collects ever enters it.{" "}
+          <span className="ag-mast-link" style={{ color:P.leirstein }} onClick={onDiscourse}>Open Discourse →</span>
+        </p>
+      </section>
+      <p style={{ fontFamily:mono, fontSize:9.5, letterSpacing:".12em", color:P.ink4, margin:"18px 0 0" }}>
+        A VINDINGUR EXPERIMENT
+      </p>
+    </div>
+  );
+}
+
+// ── Discourse ─────────────────────────────────────────────────────────────────
+// The sibling system's own dashboard in its embed mode. The browser loads it
+// from Discourse; Core's backend reads nothing from it (augur-architecture.md).
+
+function DiscourseView({ onBack, url }) {
+  const src = url ? `${url.replace(/\/$/, "")}/?embed=1&theme=light` : null;
+  return (
+    <div className="ag-page">
+      <div className="ag-back-link" onClick={onBack}>← Home</div>
+      <div className="ag-page-label">DISCOURSE · WHAT IS BEING TALKED ABOUT, MEASURED AGAINST WHAT THE GRAPH MODELS</div>
+      {src ? (
+        <iframe title="Augur Discourse" src={src}
+                style={{ width:"100%", height:"calc(100vh - 220px)", minHeight:520, border:`1px solid ${P.rule}`,
+                         background:"#fff", marginTop:8 }}/>
+      ) : (
+        <div className="loading">Loading…</div>
+      )}
+      <div style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginTop:6, letterSpacing:".06em" }}>
+        Discourse runs as its own service. If this frame is empty, it is not running; <a href={src || "#"} target="_blank" rel="noopener" style={{ color:P.ink3 }}>open it directly</a>.
+      </div>
+    </div>
+  );
+}
+
 // ── TopicsSection ─────────────────────────────────────────────────────────────
 
-function TopicsSection({ asOf, changes, navigate }) {
+function TopicsSection({ asOf, changes, topicLatest, navigate }) {
   const [topics, setTopics] = useState(null);
 
   useEffect(() => {
@@ -1456,6 +1567,7 @@ function TopicsSection({ asOf, changes, navigate }) {
       <CausalThreads
         topics={topics||[]}
         changes={changes||[]}
+        topicLatest={topicLatest}
         onTopicClick={id => navigate("topic", { topicId: id })}
       />
     </div>
@@ -1555,6 +1667,9 @@ function App() {
 
   const dims    = homeData ? homeData.dimensions.map(adaptDim)    : null;
   const changes = homeData ? homeData.changes.map(adaptChange)    : null;
+  const topicLatest = homeData && homeData.topic_latest
+    ? Object.fromEntries(Object.entries(homeData.topic_latest).map(([k, c]) => [k, adaptChange(c)]))
+    : null;
 
   // A new view starts at its top; otherwise it opens wherever the page was scrolled
   const navigate = (name, params = {}) => { setView({ name, ...params }); window.scrollTo(0, 0); };
@@ -1562,7 +1677,7 @@ function App() {
   return (
     <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column",
                   background:P.bein, color:P.natt, paddingBottom:80 }}>
-      <LiveHeader statusData={statusData}/>
+      <LiveHeader statusData={statusData} navigate={navigate}/>
       <MarketTape instruments={market}/>
 
       {/* ── Home ── */}
@@ -1636,7 +1751,7 @@ function App() {
           </div>
 
           <DomainSection dims={dims} changes={changes} homeError={homeError} navigate={navigate}/>
-          <TopicsSection asOf={asOf} changes={changes} navigate={navigate}/>
+          <TopicsSection asOf={asOf} changes={changes} topicLatest={topicLatest} navigate={navigate}/>
         </>
       )}
 
@@ -1658,6 +1773,16 @@ function App() {
           onEdgeSelect={id => navigate("reasoning", { rType:"edge", rId:id })}
           asOf={asOf}
         />
+      )}
+
+      {/* ── About the Causal Graph ── */}
+      {view.name === "about" && (
+        <AboutView onBack={() => navigate("home")} onDiscourse={() => navigate("discourse")}/>
+      )}
+
+      {/* ── Discourse (the sibling system's dashboard, loaded by the browser) ── */}
+      {view.name === "discourse" && (
+        <DiscourseView onBack={() => navigate("home")} url={statusData && statusData.links && statusData.links.discourse}/>
       )}
 
       {/* ── Reasoning ── */}

@@ -23,6 +23,9 @@ router = APIRouter(prefix="/api", tags=["home"])
 
 
 _HOME_CHANGES_LIMIT = 200
+# How far back a topic's latest change is looked for
+_TOPIC_LATEST_HOURS = 24 * 30
+_TOPIC_LATEST_LIMIT = 3000
 
 def _pool(request: Request):
     return request.app.state.raw_pool
@@ -102,6 +105,16 @@ async def home_view(
     # (60 changes on a busy day so far), not a display-sized handful.
     changes = await get_recent_changes(pool, hours=24, as_of=ts, limit=_HOME_CHANGES_LIMIT)
 
+    # Each topic's most recent change, however old (docs/augur-presentation.md,
+    # topics): the threads never show a topic as empty because the day was quiet
+    older = await get_recent_changes(pool, hours=_TOPIC_LATEST_HOURS, as_of=ts,
+                                     limit=_TOPIC_LATEST_LIMIT, rows_per_kind=_TOPIC_LATEST_LIMIT)
+    topic_latest: dict[str, ChangeRecord] = {}
+    for c in older:
+        for tid in c.topic_ids:
+            if tid not in topic_latest or c.occurred_at > topic_latest[tid].occurred_at:
+                topic_latest[tid] = c
+
     # Editorial notes reflect the *current* 24h; only attach them to the live view.
     notes = await get_dimension_notes(pool) if ts is None else {}
 
@@ -111,6 +124,7 @@ async def home_view(
         "changes": [_serialise_change(c) for c in changes],
         # True when the window held more changes than were returned
         "changes_truncated": len(changes) >= _HOME_CHANGES_LIMIT,
+        "topic_latest": {tid: _serialise_change(c) for tid, c in topic_latest.items()},
     })
 
 
