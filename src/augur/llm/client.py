@@ -45,6 +45,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import structlog
 from openai import APIStatusError, AsyncOpenAI, RateLimitError
 
@@ -134,6 +136,20 @@ def _trace_value(value: Any) -> Any:
     return value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
 
 
+class _TransientHTTPError(Exception):
+    """A decision call worth retrying: rate-limited or a server error."""
+
+
+@dataclass
+class DecisionResponse:
+    """A decision model's answers, keyed by question name."""
+
+    answers: dict[str, Any]
+    model: str
+    cost_usd: Decimal
+    call_id: str
+
+
 class LLMClient:
     """
     Single entry point for all LLM calls in Augur.
@@ -158,6 +174,10 @@ class LLMClient:
     ) -> None:
         self._daily_budget = daily_budget_usd
         self._call_log = call_log
+        # Decision models are served beside chat completions:
+        # https://openrouter.ai/api/v1 -> https://openrouter.ai/api/alpha/decisions
+        self._main_key = openrouter_api_key
+        self._decisions_url = openrouter_base_url.rstrip("/").removesuffix("/v1") + "/alpha/decisions"
         self._environment = environment
         self._model_routing = model_routing or dict(DEFAULT_MODEL_ROUTING)
         self._daily_call_limit = daily_call_limit
@@ -205,6 +225,7 @@ class LLMClient:
                     PipelineStage.PROJECTION: cfg.augur_model_projection,
                     PipelineStage.CONVERSATION: cfg.augur_model_conversation,
                     PipelineStage.DIGEST: cfg.augur_model_digest,
+                    PipelineStage.TRIAGE: cfg.augur_model_triage,
                 }
             ),
             daily_call_limit=cfg.llm_daily_call_limit,
@@ -394,6 +415,92 @@ class LLMClient:
             cost_usd=cost_usd or Decimal(0),
             call_id=str(call_id),
         )
+
+    async def decide(
+        self,
+        *,
+        stage: PipelineStage,
+        prompt_template_id: str,
+        state: dict[str, Any],
+        questions: dict[str, dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
+        max_retries: int = 3,
+        http: httpx.AsyncClient | None = None,
+    ) -> DecisionResponse:
+        """
+        Ask a decision model typed questions about `state`, recorded in llm_calls.
+
+        OpenRouter's Decisions API answers each question with a choice or a
+        calibrated probability, never free text (augur-architecture.md, model
+        selection). The call is budgeted like a paid completion: refused past
+        the daily budget, recorded before it is made, and an unreported cost
+        is an error. `messages` in llm_calls holds the state and the questions.
+        """
+        spent = await self._call_log.budgeted_spend_for(_utc_today())
+        if spent >= self._daily_budget:
+            raise LLMBudgetExceededError(
+                f"Daily LLM budget of ${self._daily_budget} exceeded. Current spend: ${spent}."
+            )
+        model = self.model_for_stage(stage)
+        call_id = uuid.uuid4()
+        await self._call_log.start(LLMCallStart(
+            call_id=call_id, stage=str(stage), prompt_template_id=prompt_template_id, model=model,
+            is_free_tier=False, temperature=0.0, metadata=metadata or {},
+            messages=[{"role": "state", "content": json.dumps(state, default=str)},
+                      {"role": "questions", "content": json.dumps(questions)}],
+        ))
+
+        started = time.monotonic()
+        attempts, last_error, data = 0, None, None
+        owns_http = http is None
+        http = http or httpx.AsyncClient(timeout=60)
+        try:
+            for attempt in range(max_retries):
+                attempts = attempt + 1
+                try:
+                    resp = await http.post(
+                        self._decisions_url,
+                        json={"model": model, "state": state, "questions": questions},
+                        headers={"Authorization": f"Bearer {self._main_key}", "X-Title": "Augur"},
+                    )
+                    if resp.status_code == 429 or resp.status_code >= 500:
+                        raise _TransientHTTPError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+                    body = resp.json()
+                    if resp.status_code != 200 or "error" in body:
+                        raise LLMCallError(f"HTTP {resp.status_code}: {str(body)[:300]}")
+                    data = body
+                    break
+                except (_TransientHTTPError, httpx.TransportError) as exc:
+                    last_error = exc
+                    if attempts < max_retries:
+                        await asyncio.sleep(2**attempt)
+                except Exception as exc:
+                    last_error = exc
+                    break
+        finally:
+            if owns_http:
+                await http.aclose()
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        if data is None:
+            await self._call_log.finish(call_id, LLMCallEnd(
+                status="error", attempts=attempts, latency_ms=latency_ms, error=str(last_error)))
+            raise LLMCallError(f"Decision call for stage={stage} model={model} failed: {last_error}")
+
+        usage = data.get("usage") or {}
+        raw_cost = usage.get("cost")
+        cost = Decimal(str(raw_cost)) if raw_cost is not None else None
+        answers = data.get("answers") or {}
+        await self._call_log.finish(call_id, LLMCallEnd(
+            status="ok" if cost is not None else "error", attempts=attempts, latency_ms=latency_ms,
+            output=json.dumps(answers), error=None if cost is not None else "OpenRouter did not report cost",
+            prompt_tokens=usage.get("input_tokens"), completion_tokens=usage.get("output_tokens"),
+            cost_usd=cost, model=data.get("model") or model,
+        ))
+        if cost is None:
+            raise LLMCostUnreportedError(f"OpenRouter returned no usage.cost for stage={stage} model={model}")
+        return DecisionResponse(answers=answers, model=data.get("model") or model, cost_usd=cost,
+                                call_id=str(call_id))
 
     async def _wait_for_quota(self) -> None:
         """Raise past the daily quota; wait while the per-minute rate is used up."""

@@ -3,10 +3,13 @@ Which payloads extraction reads (docs/augur-signal-pipeline.md, "Which
 payloads are read").
 
 The free tier lets extraction read a few payloads an hour out of hundreds.
-This ranks the 24-hour queue by breadth: how many other sources carry the
-same story, the story being the distinctive words of a payload's headline.
-Source weight breaks ties, then recency; one payload per story per run.
-No LLM call: ranking only.
+`plan_run` orders the 24-hour queue from the triage answers (augur.extraction.
+triage): soft news dropped, a story read once a day, consequence first with
+breadth breaking ties, a fifth of the calls reserved for slow-building risks,
+and each payload costing only the lenses relevant to it. Breadth is how many
+other sources carry the same story, the story being the distinctive words of
+a payload's headline. Payloads without triage answers come after the triaged
+ones, in breadth order, read by every lens. No LLM call: ordering only.
 """
 
 from __future__ import annotations
@@ -48,6 +51,9 @@ class Candidate:
     source_weight: float = 0.5
     words: frozenset[str] = field(default_factory=frozenset)
     breadth: int = 0  # other sources carrying the same story
+    triage: dict[str, float] | None = None  # question -> probability; None when not triaged
+    lenses: list[str] = field(default_factory=list)  # the lenses that will read it
+    score: float = 0.0  # consequence (+ radar boost); -1 when not triaged
 
 
 def rank_by_breadth(candidates: list[Candidate]) -> list[Candidate]:
@@ -79,3 +85,76 @@ def pick_for_run(candidates: list[Candidate], n: int) -> list[Candidate]:
             continue  # this story already has its payload this run
         picked.append(c)
     return picked
+
+
+# docs/augur-signal-pipeline.md, "Which payloads are read" (November 2026)
+SOFT_DROP = 0.5          # soft news at or above this is never read
+SLOW_RISK_MIN = 0.7      # a slow-building risk for the reserve
+SLOW_SHARE = 0.2         # share of a run's calls reserved for them
+RADAR_BOOST = 0.15       # consequence boost in a domain the radar flags
+RADAR_LENS_MIN = 0.5     # how relevant that domain's lens must be
+
+
+def _same_story(c: Candidate, words: frozenset[str]) -> bool:
+    return len(c.words) >= STORY_OVERLAP and len(c.words & words) >= STORY_OVERLAP
+
+
+def plan_run(
+    candidates: list[Candidate],
+    *,
+    call_budget: int,
+    lens_ids: list[str],
+    read_stories: list[frozenset[str]] = (),  # type: ignore[assignment]
+    radar_lenses: set[str] = frozenset(),  # type: ignore[assignment]
+) -> list[Candidate]:
+    """
+    The payloads one run reads, each with the lenses that will read it.
+
+    `call_budget` is the run's lens calls; a payload costs one per lens.
+    `read_stories` are the story words of payloads read in the last day;
+    `radar_lenses` the lenses whose domain the radar flags.
+    """
+    from augur.extraction.triage import relevant_lenses
+
+    eligible: list[Candidate] = []
+    for c in rank_by_breadth(candidates):
+        t = c.triage
+        if t and t.get("soft", 0.0) >= SOFT_DROP:
+            continue
+        if any(_same_story(c, w) for w in read_stories):
+            continue  # this story was read in the last day
+        c.lenses = relevant_lenses(t, lens_ids)
+        if not c.lenses:
+            continue
+        if t:
+            boosted = any(t.get(f"lens_{lens}", 0.0) >= RADAR_LENS_MIN for lens in radar_lenses)
+            c.score = t.get("consequence", 0.0) + (RADAR_BOOST if boosted else 0.0)
+        else:
+            c.score = -1.0
+        eligible.append(c)
+
+    main = sorted(eligible, key=lambda c: (c.score, c.breadth, c.source_weight, c.content_timestamp),
+                  reverse=True)
+    slow = sorted((c for c in eligible if c.triage and c.triage.get("slow_risk", 0.0) >= SLOW_RISK_MIN),
+                  key=lambda c: (c.triage["slow_risk"], c.score, c.breadth), reverse=True)
+
+    picked: list[Candidate] = []
+    used = 0
+
+    def take(c: Candidate, limit: int) -> None:
+        nonlocal used
+        if c in picked or used + len(c.lenses) > limit:
+            return
+        if any(_same_story(c, p.words) for p in picked):
+            return  # one payload per story per run
+        picked.append(c)
+        used += len(c.lenses)
+
+    for c in slow:
+        take(c, int(call_budget * SLOW_SHARE))
+    for c in main:
+        take(c, call_budget)
+    if not picked and main:
+        picked.append(main[0])  # at least one, even past the budget
+    return picked
+

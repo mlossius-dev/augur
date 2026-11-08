@@ -107,10 +107,14 @@ class TestModelRouting:
 
     def test_every_stage_defaults_to_a_free_model(self) -> None:
         # Operator decision (October 2026): free models only, lower quality
-        # accepted. A paid default would silently start billing.
-        from augur.llm.models import DEFAULT_MODEL_ROUTING, is_free_model
+        # accepted. A paid default would silently start billing. The one
+        # exception the operator made is triage (November 2026).
+        from augur.llm.models import DEFAULT_MODEL_ROUTING, TRIAGE_MODEL, is_free_model
 
         for stage in PipelineStage:
+            if stage == PipelineStage.TRIAGE:
+                assert DEFAULT_MODEL_ROUTING[stage] == (TRIAGE_MODEL,)
+                continue
             assert all(is_free_model(m) for m in DEFAULT_MODEL_ROUTING[stage]), stage
 
     def test_overrides_replace_only_the_stages_they_name(self) -> None:
@@ -571,22 +575,6 @@ class TestLLMIntegration:
         _, end, _ = call_log.calls[UUID(response.call_id)]
         assert end is not None and end.status == "ok"
         assert end.cost_usd is not None
-
-
-class TestExtractionCap:
-    def test_keeps_as_many_newest_payloads_as_fit(self) -> None:
-        from augur.scheduler import cap_extraction_payloads
-
-        rows = ["newest", "newer", "older", "oldest"]
-        assert cap_extraction_payloads(rows, calls_per_run=20, calls_per_payload=8) == [
-            "newest",
-            "newer",
-        ]
-
-    def test_always_processes_at_least_one(self) -> None:
-        from augur.scheduler import cap_extraction_payloads
-
-        assert cap_extraction_payloads(["only"], calls_per_run=3, calls_per_payload=8) == ["only"]
 
 
 class TestPaidCallsAndTheFreeQuota:

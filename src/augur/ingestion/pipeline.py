@@ -165,7 +165,7 @@ class IngestionPipeline:
 
         elif method == "api":
             source_id = source.source_id
-            if source_id == "fred":
+            if source_id in ("fred", "fred_radar"):
                 client = FredClient()
                 return await client.fetch_source(source)
             elif source_id == "yahoo_finance":

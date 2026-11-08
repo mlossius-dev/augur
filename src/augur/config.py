@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     augur_model_projection: str = ""
     augur_model_conversation: str = ""
     augur_model_digest: str = ""
+    augur_model_triage: str = ""
+    # Payloads triaged per extraction run (docs/augur-signal-pipeline.md)
+    triage_payloads_per_run: int = 400
 
     # ── Ingestion ─────────────────────────────────────────────────────────────
     # Local filesystem archive root for raw payloads

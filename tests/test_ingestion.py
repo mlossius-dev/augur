@@ -357,16 +357,11 @@ class TestRssFetcher:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. FredClient — mock API
+# 5. FredClient — public CSV
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_FRED_RESPONSE = {
-    "observations": [
-        {"date": "2024-01-15", "value": "75.32"},
-        {"date": "2024-01-12", "value": "74.10"},
-        {"date": "2024-01-11", "value": "72.85"},
-    ]
-}
+# FRED's public CSV download (oldest first)
+_FRED_CSV = "observation_date,DCOILWTICO\n2024-01-11,72.85\n2024-01-12,74.10\n2024-01-15,75.32\n"
 
 
 class TestFredClient:
@@ -387,7 +382,7 @@ class TestFredClient:
         )
 
         mock_response = MagicMock()
-        mock_response.json = MagicMock(return_value=_FRED_RESPONSE)
+        mock_response.text = _FRED_CSV
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client_cls:
@@ -423,7 +418,7 @@ class TestFredClient:
         )
 
         mock_response = MagicMock()
-        mock_response.json = MagicMock(return_value={"observations": [{"date": "2024-01-15", "value": "."}]})
+        mock_response.text = "observation_date,DCOILWTICO\n2024-01-15,.\n"
         mock_response.raise_for_status = MagicMock()
 
         with patch("httpx.AsyncClient") as mock_client_cls:

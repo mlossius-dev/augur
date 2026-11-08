@@ -16,6 +16,7 @@ APScheduler docs: https://apscheduler.readthedocs.io/en/3.x/
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -58,55 +59,79 @@ async def _ingestion_job(app_state: Any) -> None:
         log.error("scheduler.ingestion_failed", error=str(exc))
 
 
-def cap_extraction_payloads(rows: list, calls_per_run: int, calls_per_payload: int) -> list:
+async def _plan_extraction(pool: Any, rows: list, call_budget: int, lens_ids: list[str]) -> list:
     """
-    The payloads one extraction run may process: as many as fit in
-    `calls_per_run` calls, at least one, in the order given (newest first).
-
-    Hourly extraction would otherwise spend the day's free-tier quota on its
-    own. Payloads left out are picked up by the next run while they are still
-    inside its two-hour window.
+    The run's payloads, each with the lenses that will read it
+    (docs/augur-signal-pipeline.md, "Which payloads are read").
     """
-    return rows[: max(1, calls_per_run // calls_per_payload)]
-
-
-def _widest_stories_first(rows: list, calls_per_run: int, calls_per_payload: int) -> list:
-    """The run's payloads: widest-reported stories first, one per story."""
-    from augur.extraction.selection import Candidate, pick_for_run
+    from augur.extraction.selection import Candidate, plan_run, story_words
     from augur.ingestion.source_registry import load_sources
 
     weights = {s.source_id: s.starting_source_weight for s in load_sources()}
-    n = len(cap_extraction_payloads(rows, calls_per_run, calls_per_payload))
-    by_id = {r["payload_id"]: r for r in rows}
-    picked = pick_for_run(
-        [
-            Candidate(
-                payload_id=r["payload_id"], source_id=r["source_id"], content=r["content"],
-                content_timestamp=r["content_timestamp"],
-                source_weight=weights.get(r["source_id"], 0.5),
-            )
-            for r in rows
-        ],
-        n,
+    async with pool.acquire() as conn:
+        # Stories read in the last day are not read again
+        read_rows = await conn.fetch(
+            """
+            SELECT DISTINCT p.content
+            FROM llm_calls c
+            JOIN payloads p ON p.payload_id::text = c.metadata->>'payload_id'
+            WHERE c.stage = 'extraction'
+              AND c.called_at > now() - interval '24 hours'
+              AND NOT (c.metadata ? 'backfill')
+            """
+        )
+        # Domains where the radar sees a building risk
+        radar_rows = await conn.fetch(
+            """
+            SELECT DISTINCT metadata->>'lens' AS lens
+            FROM payloads
+            WHERE source_id = 'fred_radar' AND fetched_at > now() - interval '72 hours'
+              AND metadata->>'flag' = 'stretched'
+            """
+        )
+    candidates = [
+        Candidate(
+            payload_id=r["payload_id"], source_id=r["source_id"], content=r["content"],
+            content_timestamp=r["content_timestamp"],
+            source_weight=weights.get(r["source_id"], 0.5),
+            triage=json.loads(r["triage"]) if isinstance(r["triage"], str) else r["triage"],
+        )
+        for r in rows
+    ]
+    picked = plan_run(
+        candidates,
+        call_budget=call_budget,
+        lens_ids=lens_ids,
+        read_stories=[w for w in (story_words(r["content"]) for r in read_rows) if w],
+        radar_lenses={r["lens"] for r in radar_rows if r["lens"]},
     )
     log.info("scheduler.extraction_picked",
-             picks=[{"source": c.source_id, "breadth": c.breadth,
-                     "headline": c.content.splitlines()[0][:80]} for c in picked])
-    return [by_id[c.payload_id] for c in picked]
+             picks=[{"source": c.source_id, "score": round(c.score, 2), "breadth": c.breadth,
+                     "lenses": c.lenses, "headline": c.content.splitlines()[0][:80]} for c in picked])
+    return picked
 
 
 async def _extraction_job(app_state: Any) -> None:
-    """Hourly extraction: run all active lenses over recently ingested payloads."""
+    """Hourly extraction: triage new payloads, then read the most consequential with their lenses."""
     from augur.config import get_settings
     from augur.extraction.executor import LensExecutor, detect_cross_lens_convergence
     from augur.extraction.lenses import ACTIVE_LENSES
     from augur.extraction.tier_a import TierAStore
+    from augur.extraction.triage import triage_pending
 
     pool = app_state.raw_pool
     llm_client = app_state.llm_client
+    settings = get_settings()
 
     executor = LensExecutor(llm_client)
     tier_a = TierAStore(pool)
+
+    # Triage first; payloads it cannot answer for are still read, by every lens
+    try:
+        await triage_pending(pool, llm_client, limit=settings.triage_payloads_per_run,
+                             exclude_sources=NOT_EXTRACTED_SOURCES)
+    except Exception as exc:
+        log.warning("scheduler.triage_failed", error=str(exc))
 
     # The 24-hour queue: accepted live payloads no lens has read yet
     # (docs/augur-signal-pipeline.md, "Which payloads are read").  "Read"
@@ -115,8 +140,10 @@ async def _extraction_job(app_state: Any) -> None:
     async with pool.acquire() as conn:
         payload_rows = await conn.fetch(
             """
-            SELECT p.payload_id, p.content, p.content_timestamp, p.source_id
+            SELECT p.payload_id, p.content, p.content_timestamp, p.source_id,
+                   t.answers AS triage
             FROM payloads p
+            LEFT JOIN payload_triage t ON t.payload_id = p.payload_id
             WHERE p.fetched_at > now() - interval '24 hours'
               AND NOT p.rejected
               -- Backfilled payloads are extracted by the backfill, on its own model
@@ -159,37 +186,32 @@ async def _extraction_job(app_state: Any) -> None:
 
     edge_context = [dict(r) for r in disconf_edge_rows]
 
-    calls_per_payload = len(ACTIVE_LENSES) + (1 if edge_context else 0)
-    capped = _widest_stories_first(
-        payload_rows, get_settings().extraction_calls_per_run, calls_per_payload
-    )
-    if len(capped) < len(payload_rows):
-        log.info(
-            "scheduler.extraction_capped",
-            n_available=len(payload_rows),
-            n_processed=len(capped),
-            calls_per_payload=calls_per_payload,
-        )
-    payload_rows = capped
+    lens_ids = [lens.lens_id for lens in ACTIVE_LENSES] + (["disconfirmation"] if edge_context else [])
+    picked = await _plan_extraction(pool, payload_rows, settings.extraction_calls_per_run, lens_ids)
     log.info(
         "scheduler.extraction_start",
-        n_payloads=len(payload_rows),
+        n_available=len(payload_rows),
+        n_payloads=len(picked),
+        n_calls=sum(len(c.lenses) for c in picked),
         n_disconf_edges=len(edge_context),
     )
     total_signals = 0
 
-    for row in payload_rows:
-        # Run all standard lenses in parallel
+    for c in picked:
+        row = {"payload_id": c.payload_id, "content": c.content,
+               "content_timestamp": c.content_timestamp, "source_id": c.source_id}
+        # The relevant standard lenses, in parallel
+        lenses = [lens for lens in ACTIVE_LENSES if lens.lens_id in c.lenses]
         signals = await executor.extract_all_lenses(
             payload_id=row["payload_id"],
             content=row["content"],
             content_timestamp=row["content_timestamp"],
             source_id=row["source_id"],
-            lenses=ACTIVE_LENSES,
-        )
+            lenses=lenses,
+        ) if lenses else []
 
-        # Run inline disconfirmation if we have high-weight edges
-        if edge_context:
+        # Inline disconfirmation, when there are high-weight edges and it is relevant
+        if edge_context and "disconfirmation" in c.lenses:
             disconf_signals = await executor.extract_disconfirmation(
                 payload_id=row["payload_id"],
                 content=row["content"],

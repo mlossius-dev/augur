@@ -38,6 +38,9 @@ class PipelineStage(StrEnum):
     PROJECTION = "projection"
     CONVERSATION = "conversation"
     DIGEST = "digest"
+    # Which payloads extraction reads and by which lenses: a decision model,
+    # not a chat model (docs/augur-signal-pipeline.md, "Which payloads are read")
+    TRIAGE = "triage"
 
 
 FREE_MODELS_ROUTER = "openrouter/free"
@@ -49,6 +52,10 @@ type ModelChain = tuple[str, ...]
 DEFAULT_MODEL_ROUTING: dict[PipelineStage, ModelChain] = {
     stage: (FREE_MODELS_ROUTER,) for stage in PipelineStage
 }
+# The one paid default (operator decision, November 2026; augur-architecture.md,
+# model selection): a few cents a day, under the dollar budget
+TRIAGE_MODEL = "typesafe/jev-1.13"
+DEFAULT_MODEL_ROUTING[PipelineStage.TRIAGE] = (TRIAGE_MODEL,)
 
 
 def is_free_model(model: str) -> bool:

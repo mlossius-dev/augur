@@ -263,7 +263,8 @@ Each entry below uses an abbreviated form. The full registry lives in a structur
 
 #### Economic and financial
 
-- **FRED** (Federal Reserve Bank of St. Louis) — fred.stlouisfed.org/docs/api — daily for most series — global central bank balance sheets, US economic indicators. *US/EU perspective, API.*
+- **FRED** (Federal Reserve Bank of St. Louis) — fred.stlouisfed.org — daily for most series — global central bank balance sheets, US economic indicators. *US/EU perspective.* Read through FRED's public CSV download (`fred.stlouisfed.org/graph/fredgraph.csv?id=…`), which needs no key (operator decision, November 2026; the keyed API had silently returned nothing because no key was set).
+- **FRED radar** (`fred_radar`, operator decision, November 2026) — the same CSV download, judged for unusual level and 60-day trend (`augur-signal-pipeline.md`, "The radar"). Basket: US high-yield, CCC and investment-grade option-adjusted spreads, euro high-yield spread (ICE BofA), VIX, US 10y–2y and 10y–3m curves (risk when falling), St. Louis financial stress index, Chicago Fed financial conditions index, broad dollar index, US 30-year mortgage rate, US initial jobless claims. *US/EU perspective, structured.*
 - **IMF Data** — data.imf.org — monthly — IFS for reserves, COFER for currency composition, SDDS for high-frequency country data. *Multilateral, API/download.*
 - **World Gold Council Goldhub** — gold.org/goldhub — monthly — central bank gold movements per country. *Industry body, structured download.*
 - **US Treasury TIC** — home.treasury.gov/data/treasury-international-capital-tic-system — monthly — foreign holdings of US Treasuries by country. *US/EU perspective, API.*

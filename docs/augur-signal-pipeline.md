@@ -229,20 +229,29 @@ Lenses run **in parallel** for each payload. Lens A reading a payload does not s
 
 After all lenses run, their signals are merged into a single batch for Tier A storage.
 
-### Which payloads are read (operator decision, October 2026)
+### Which payloads are read (operator decisions, October and November 2026)
 
-On the free tier, extraction reads a few payloads an hour out of hundreds ingested (`augur-architecture.md`, model selection), so which few it reads decides what reaches the graph. Reading the newest ones dropped widely reported stories by chance: over three days in October 2026, 7 of 188 articles on an oil-price move were read, 1 of 46 on US aid to Ukraine, none of 13 on riots in France.
+On the free tier, extraction reads a few payloads an hour out of hundreds ingested (`augur-architecture.md`, model selection), so which few it reads decides what reaches the graph. Reading the newest ones dropped widely reported stories by chance (October 2026: 7 of 188 articles on an oil-price move read, none of 13 on riots in France). Reading the most widely reported ones first (breadth) fixed that but was blind to quiet stories: in the first week of November none of 14 articles on junk-debt stress and defaults was read, while one plane crash was read three times, and US high-yield spreads widened 77 bp over 60 days without Augur noticing.
 
-Extraction therefore reads the most widely reported stories first:
+An experiment over that week (`scripts/eval_reading_order.py`, 9 284 news payloads) measured what each read payload gave the graph. A model's judgement of consequence separated payloads that gave the graph something from those that gave nothing better than breadth did (AUC 0.71 against 0.64; "soft" news, 0.74), and payloads judged highly consequential gave the graph eight times as much as those judged inconsequential. Whether an article was new information rather than analysis predicted the wrong way (0.39) and is not used.
 
-- **A 24-hour queue.** Every accepted, unread live payload of the last 24 hours is a candidate, so a story is not lost for missing one hourly run.
-- **Breadth.** A payload's story is the set of distinctive words in its headline. Its breadth is the number of *other* sources whose payloads in the queue share enough of those words: the same development reported by twelve outlets outranks an item only one carries. Source weight breaks ties, then recency.
-- **Market data is not read.** Payloads from the structured market sources (`yahoo_finance`, `fred`) are price series, not reporting; the home page shows sharp moves in them directly (`augur-presentation.md`, level 3), and a lens reading them only produced events such as "USD/JPY 5-day decline of 1.09%" that duplicate those moves and take calls from news (operator decision, October 2026).
-- **One per story per run.** Once a payload is chosen, others sharing its story wait for a later run, so one development does not take a whole run's capacity.
+The order, in steps:
 
-This is ranking only: no LLM call, no change to the call quota. Breadth measures how widely something is reported, not whether it is true or important in itself; corroboration and weight remain the graph's business.
+1. **Triage on arrival.** Every accepted live news payload is put to Jev (`typesafe/jev-1.13`, OpenRouter's Decisions API), a decision model that answers fixed questions with calibrated probabilities and never free text: is each lens relevant; is the development consequential over the coming months; does it describe a slow-building risk; is it soft news (local, celebrity, sport, entertainment, lifestyle). The answers are stored in `payload_triage`. Triage is the one paid stage (see `augur-architecture.md`, model selection): about 0.00004 USD a payload, a few cents a day, recorded in `llm_calls` like every call. If triage is unavailable (budget, outage), payloads without answers are read in breadth order as before and by every lens.
+2. **A 24-hour queue.** Every accepted, unread live news payload of the last 24 hours is a candidate. Market data is not (below).
+3. **Soft news is never read** (soft ≥ 0.5; a tenth of all news).
+4. **A story is read once a day.** A candidate whose story (the distinctive words of its headline, as below) matches one read in the last 24 hours is skipped, and within a run one payload per story is read.
+5. **Consequence first.** Candidates are ranked by Jev's consequence, raised by 0.15 when the radar (below) shows a building risk in a domain a lens relevant to the payload covers. Breadth breaks ties, then source weight, then recency. Breadth is the number of *other* sources whose payloads in the queue share at least two distinctive headline words.
+6. **Room for quiet risks.** A fifth of each run's calls is reserved for payloads Jev judges a slow-building risk (≥ 0.7), most so first; whatever they leave goes to the main order. Without this reserve, ranking by anything loud pushes them out again.
+7. **Only relevant lenses read it.** A payload is read only by the lenses Jev judges relevant: probability at least 0.10, or 0.05 for the financial and regulatory lenses, where misses were likeliest. Evaluated on 448 payloads all lenses had read (`scripts/eval_lens_triage.py`): these thresholds keep about 98 % of the lens calls that found anything and skip more than half of all lens calls. A run is a budget of calls, not of payloads, so the saving buys more payloads per run: about twice as many.
 
-**Revisit trigger:** if widely reported but low-value stories (celebrity, sport) crowd out structural ones, weight breadth by the lenses' domains or by source tier.
+**Market data is not read.** Payloads from the structured market sources (`yahoo_finance`, `fred`) are price series, not reporting; the home page shows sharp moves in them directly (`augur-presentation.md`, level 3), and a lens reading them only produced events such as "USD/JPY 5-day decline of 1.09%" that duplicate those moves and take calls from news (operator decision, October 2026). Radar payloads (`fred_radar`) are the exception: there is one only when a series is unusual, it is short, and the financial lens should turn it into a condition.
+
+**The radar** (operator decision, November 2026). Five-day market moves catch shocks, not build-ups. The `fred_radar` source follows a basket of stress indicators daily (credit spreads, volatility, yield curves, financial-conditions and stress indices, the dollar, mortgage rates, jobless claims; `augur-sources.md`) and judges each by how unusual its level and its 60-day trend are against the last three years: a 60-day change at least 1.5 standard deviations beyond its usual size in the risky direction, or a level beyond the 95th percentile in that direction, is *stretched*; at least 1.0 standard deviation is *watch*. Only an unusual series produces a payload, a deterministic statement such as "US high-yield spread at 3.48 %, +81 bp over 60 days, 2.1 standard deviations above its usual 60-day change; 89th percentile of three years." No LLM is involved in the radar itself.
+
+Ranking is no verdict on truth; corroboration and weight remain the graph's business. Jev decides what is read, without giving reasons, so the order is checked against what payloads give the graph: re-run `scripts/eval_reading_order.py` monthly.
+
+**Revisit triggers:** the share of read payloads that give the graph nothing rises; a lens's recall in `scripts/eval_lens_triage.py` falls below 95 %; the slow-risk reserve fills with chronic, low-value stories; or Jev's snapshot is retired.
 
 ### What lenses do not do
 
