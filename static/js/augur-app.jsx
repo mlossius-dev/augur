@@ -491,7 +491,10 @@ function DomainLedger({ dim, changes, onClose, onOpen }) {
             <div style={{ fontFamily:mono, fontSize:9, color:P.ink4, marginTop:3, letterSpacing:".04em" }}>
               {c.downstream > 0 && `${c.downstream} edge${c.downstream===1?"":"s"} downstream`}
               {c.downstream > 0 && canOpen(c) && " · "}
-              {canOpen(c) ? "open reasoning →" : c.type === "market_move" ? "market data · not a graph change" : ""}
+              {canOpen(c) ? "open reasoning →"
+                : c.type === "market_move" ? "market data · not a graph change"
+                : c.type === "risk_buildup" ? `radar · ${c.weightAfter || ""} · level and 60-day trend against three years`
+                : ""}
             </div>
           </div>
         ))}

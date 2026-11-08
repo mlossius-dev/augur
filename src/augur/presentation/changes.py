@@ -52,6 +52,9 @@ class ChangeRecord:
     sources: list[dict] = field(default_factory=list)
 
 
+# Radar readings stay on the home page this long (docs/augur-presentation.md)
+RADAR_LOOKBACK_HOURS = 72
+
 # Market moves shown as changes (docs/augur-presentation.md, level 3): over
 # the structured sources' five trading days, by instrument class
 _MARKET_SOURCES = ["yahoo_finance", "fred"]
@@ -68,6 +71,7 @@ _IMPACT = {
     "condition_tracked": 6,
     "event_recorded": 6,
     "market_move": 6,
+    "risk_buildup": 2,
     "edge_created": 6,
 }
 
@@ -89,6 +93,7 @@ async def get_recent_changes(
       3. edges (created_at) — newly created high-weight edges
       4. new event nodes connected to an active condition
       5. sharp market moves in the structured-data sources (data, not graph)
+      6. building risks the radar flags (data, not graph)
     """
     cutoff = as_of or datetime.now(timezone.utc)
     window_start = cutoff - timedelta(hours=hours)
@@ -203,7 +208,42 @@ async def get_recent_changes(
             _MARKET_SOURCES,
         )
 
+        # 6. Building risks: the latest radar reading per series. The radar is
+        # daily and silent at weekends, so it looks back at least three days.
+        radar_rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (metadata->>'series_id')
+                   metadata->>'series_id' AS series_id, metadata->>'label' AS label,
+                   metadata->>'flag' AS flag, metadata->>'dimension' AS dimension,
+                   content, content_timestamp
+            FROM payloads
+            WHERE source_id = 'fred_radar' AND NOT rejected
+              AND fetched_at BETWEEN $1 AND $2
+            ORDER BY metadata->>'series_id', content_timestamp DESC, fetched_at DESC
+            """,
+            min(window_start, cutoff - timedelta(hours=RADAR_LOOKBACK_HOURS)),
+            cutoff,
+        )
+
     # Build change records
+    for row in radar_rows:
+        dim = row["dimension"] or "economic_stability"
+        changes.append(ChangeRecord(
+            change_id=f"radar-{row['series_id']}-{row['content_timestamp']:%Y%m%d}",
+            change_type="risk_buildup",
+            summary=row["content"],
+            dimension=dim,
+            dimension_label=_dim_label(dim),
+            occurred_at=row["content_timestamp"].isoformat(),
+            target_id="",
+            target_type="radar",
+            target_name=row["label"] or row["series_id"],
+            weight_before=None,
+            weight_after=row["flag"],
+            # A series on watch ranks below a stretched one, with market moves
+            impact_rank=_IMPACT["risk_buildup"] if row["flag"] == "stretched" else _IMPACT["market_move"],
+        ))
+
     for row in market_rows:
         threshold = _MARKET_MOVE_THRESHOLD.get(row["class"] or "", _MARKET_MOVE_DEFAULT)
         if row["pct"] is None or abs(row["pct"]) < threshold:

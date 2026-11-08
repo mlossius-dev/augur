@@ -215,7 +215,7 @@ The local development environment should mirror the VPS structure as closely as 
 
 LLM inference costs money. Be aware of:
 
-- **Every stage runs on free models by default** (operator decision, October 2026; see `docs/augur-architecture.md`, model selection). Do not change a default to a paid model; a stage is moved to a paid model only by the operator, through `AUGUR_MODEL_<STAGE>`.
+- **Every stage runs on free models by default** (operator decision, October 2026; see `docs/augur-architecture.md`, model selection). Do not change a default to a paid model; a stage is moved to a paid model only by the operator, through `AUGUR_MODEL_<STAGE>`. The one exception the operator made is triage (Jev, November 2026), a few cents a day under the dollar budget.
 - **The free tier limits calls, not dollars.** The client enforces a daily and per-minute call quota from `llm_calls`. Lens extraction is the highest-volume stage and is capped per run (`EXTRACTION_CALLS_PER_RUN`). New code that calls the LLM in a loop must expect `LLMQuotaExceededError` and stop, not retry.
 - **The conversation layer uses a separate free-tier-only key.** Do not route conversation calls through the main key.
 - **Daily budget caps are enforced at the LLM client layer.** If a budget is hit, the client refuses further calls until the next cycle. Do not work around this.

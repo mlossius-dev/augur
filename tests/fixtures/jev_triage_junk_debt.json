@@ -1,0 +1,116 @@
+{
+ "request": {
+  "state": {
+   "source": "ft_rss",
+   "article": "Junk debt rout sparks 'bloodbath' for credit investors\n\nSpreads on US high-yield bonds have widened to their highest level in a year as defaults rise among the weakest borrowers and investors pull money from junk bond funds, raising refinancing costs for leveraged companies."
+  },
+  "questions": {
+   "lens_commodities": {
+    "type": "noul",
+    "instructions": "The article reports a development in physical commodity markets or supply chains: production, exports or imports, supply and demand, plant or pipeline outages, port or shipping disruption, crop conditions, or a large price move in oil, gas, grains, fertilizer, metals or freight."
+   },
+   "lens_financial": {
+    "type": "noul",
+    "instructions": "The article reports on monetary policy or financial conditions: central bank actions, currencies, banking-sector stress, sovereign debt or bond markets, reserves, or large capital flows."
+   },
+   "lens_geopolitical": {
+    "type": "noul",
+    "instructions": "The article reports on relations between states or armed groups: conflict or military action, sanctions, diplomacy, alliances, or elections and leadership changes with international consequences."
+   },
+   "lens_market": {
+    "type": "noul",
+    "instructions": "The article contains an explicit market-move statement: a named financial instrument (equity index, currency pair, commodity, bond yield or VIX) together with a stated percentage change."
+   },
+   "lens_narrative_divergence": {
+    "type": "noul",
+    "instructions": "The article frames an event, its causes or who is responsible in a way that readers from another national or ideological perspective would likely contest."
+   },
+   "lens_physical_world": {
+    "type": "noul",
+    "instructions": "The article reports a physical-world event or anomaly with consequences for infrastructure, supply chains or security: earthquake, eruption, severe weather, flood, fire, shipping or aviation disruption, or infrastructure failure."
+   },
+   "lens_regulatory": {
+    "type": "noul",
+    "instructions": "The article reports a law, regulation, enforcement action, court ruling, trade measure (tariffs, export controls) or other policy change with material impact on markets, sectors or trade."
+   },
+   "lens_disconfirmation": {
+    "type": "noul",
+    "instructions": "The article reports that something previously expected, claimed or under way did not happen, was reversed, denied, failed, eased or was contradicted."
+   },
+   "consequence": {
+    "type": "noul",
+    "instructions": "The article reports a development likely to have material consequences over the coming months for the economy, financial markets, security, or the supply of energy, food or other essentials."
+   },
+   "slow_risk": {
+    "type": "noul",
+    "instructions": "The article describes a building, slow-moving risk rather than a single event: for example widening credit spreads, rising defaults or debt stress, liquidity strain, falling inventories, or a shortage or imbalance that is accumulating."
+   },
+   "soft": {
+    "type": "noul",
+    "instructions": "The article is mainly of local, celebrity, sport, entertainment or lifestyle interest."
+   }
+  }
+ },
+ "response": {
+  "model": "typesafe/jev-1.13-20260917",
+  "answers": {
+   "lens_commodities": {
+    "type": "noul",
+    "noul": 0.02
+   },
+   "lens_financial": {
+    "type": "noul",
+    "noul": 0.96
+   },
+   "lens_geopolitical": {
+    "type": "noul",
+    "noul": 0.01
+   },
+   "lens_market": {
+    "type": "noul",
+    "noul": 0.05
+   },
+   "lens_narrative_divergence": {
+    "type": "noul",
+    "noul": 0.28
+   },
+   "lens_physical_world": {
+    "type": "noul",
+    "noul": 0.02
+   },
+   "lens_regulatory": {
+    "type": "noul",
+    "noul": 0.04
+   },
+   "lens_disconfirmation": {
+    "type": "noul",
+    "noul": 0.14
+   },
+   "consequence": {
+    "type": "noul",
+    "noul": 0.88
+   },
+   "slow_risk": {
+    "type": "noul",
+    "noul": 0.88
+   },
+   "soft": {
+    "type": "noul",
+    "noul": 0.02
+   }
+  },
+  "usage": {
+   "input_tokens": 794,
+   "output_tokens": 212,
+   "cost": 3.3348e-05,
+   "is_byok": false,
+   "cost_details": {
+    "upstream_inference_cost": 3.3348e-05,
+    "upstream_inference_prompt_cost": 3.3348e-05,
+    "upstream_inference_completions_cost": 0
+   }
+  },
+  "id": "gen-dec-1794153496-OOvZvqL0egeGdGl6AVqU",
+  "provider": "TypeSafe"
+ }
+}
